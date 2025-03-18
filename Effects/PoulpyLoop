@@ -9,6 +9,7 @@ out_pin:Right Out
 
 slider1:40<0,256,1>Fade (échantillons)
 slider2:0.0<-24,24,1>Pitch Control
+slider3:0<0,1,1{OFF,ON}>Monitoring à l'arrêt
 
 @init
 
@@ -73,6 +74,7 @@ GMEM_RECORD_MONITOR_MODE = 0;  // gmem[0] pour le mode d'enregistrement des loop
 GMEM_PLAYBACK_MODE = 1;        // gmem[1] pour le mode LIVE/PLAYBACK
 GMEM_STATS_BASE = 2;           // gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
 GMEM_NEXT_INSTANCE_ID = 194;   // gmem[194] pour le prochain ID d'instance disponible
+GMEM_MONITORING_STOP_BASE = 195;  // Base pour le monitoring à l'arrêt
 
 // Chercher un ID unique pour cette instance
 function get_unique_instance_id()
@@ -190,8 +192,13 @@ function expandRecording(note)
 
 @slider
 fade_samples = slider1;
+// Mettre à jour gmem avec l'état du monitoring à l'arrêt
+gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
+// Synchroniser le slider avec gmem
+slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
+
 while (
   midirecv(offset, msg1, msg2, msg3) ? (
     status = msg1 & $xF0;
@@ -475,9 +482,21 @@ loop(NUM_NOTES,
   );
 );
 
-// Sortie: monitoring + lecture (si applicable)
-spl0 = monL + playL;
-spl1 = monR + playR;
+// Vérifier si le monitoring à l'arrêt est activé et si la lecture est arrêtée
+(!play_state && slider3) ? (
+  // Routage direct des entrées vers les sorties avec le volume et le pan actuels
+  (mode == 0) ? ( // Mono
+    spl0 = inL * volumeFactor * gainL;
+    spl1 = inL * volumeFactor * gainR;
+  ) : ( // Stereo
+    spl0 = inL * volumeFactor * gainL;
+    spl1 = inR * volumeFactor * gainR;
+  );
+) : (
+  // Comportement normal
+  spl0 = monL + playL;
+  spl1 = monR + playR;
+);
 
 @gfx
 gfx_clear = 0;

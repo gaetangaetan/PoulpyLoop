@@ -22,6 +22,7 @@ local GMEM_RECORD_MONITOR_MODE = 0  -- gmem[0] pour le mode d'enregistrement des
 local GMEM_PLAYBACK_MODE = 1        -- gmem[1] pour le mode LIVE/PLAYBACK
 local GMEM_STATS_BASE = 2           -- gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
 local GMEM_NEXT_INSTANCE_ID = 194   -- gmem[194] pour le prochain ID d'instance disponible
+local GMEM_MONITORING_STOP_BASE = 195  -- gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
 
 -- Initialiser les valeurs dans gmem si elles ne sont pas déjà définies
 if reaper.gmem_read(GMEM_RECORD_MONITOR_MODE) == 0 and reaper.gmem_read(GMEM_PLAYBACK_MODE) == 0 then
@@ -43,6 +44,13 @@ for i = 0, 63 do
         reaper.gmem_write(stats_base, 0)      -- Mémoire utilisée (Mo)
         reaper.gmem_write(stats_base + 1, 0)  -- Temps restant (s)
         reaper.gmem_write(stats_base + 2, 0)  -- Nombre de notes
+    end
+end
+
+-- Initialiser l'espace mémoire pour le monitoring à l'arrêt
+for i = 0, 63 do
+    if reaper.gmem_read(GMEM_MONITORING_STOP_BASE + i) == 0 then
+        reaper.gmem_write(GMEM_MONITORING_STOP_BASE + i, 0)  -- Par défaut, monitoring à l'arrêt désactivé
     end
 end
 

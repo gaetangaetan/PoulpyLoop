@@ -94,6 +94,7 @@ local GMEM_RECORD_MONITOR_MODE = 0  -- gmem[0] pour le mode d'enregistrement des
 local GMEM_PLAYBACK_MODE = 1        -- gmem[1] pour le mode LIVE/PLAYBACK
 local GMEM_STATS_BASE = 2           -- gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
 local GMEM_NEXT_INSTANCE_ID = 194   -- gmem[194] pour le prochain ID d'instance disponible
+local GMEM_MONITORING_STOP_BASE = 195 -- gmem[195] à gmem[195+64*1-1] pour le monitoring à l'arrêt (64 instances max)
 
 -- Fonction pour charger le mode d'enregistrement des loops MONITOR depuis la mémoire de Reaper
 local function loadRecordMonitorLoopsMode()
@@ -2056,6 +2057,59 @@ local function mainWindow()
         reaper.ImGui_Text(ctx, string.format("Nombre total d'instances actives : %d", total_instances))
         reaper.ImGui_Text(ctx, "Note : Les statistiques sont mises à jour en temps réel par chaque instance active de PoulpyLoop.")
         
+        reaper.ImGui_EndTabItem(ctx)
+      end
+
+      -- Onglet "Monitoring" pour gérer le monitoring à l'arrêt
+      if reaper.ImGui_BeginTabItem(ctx, "Monitoring") then
+        reaper.ImGui_Text(ctx, "Monitoring à l'arrêt des pistes PoulpyLoop :")
+        reaper.ImGui_Separator(ctx)
+
+        -- Tableau pour afficher les pistes avec PoulpyLoop
+        reaper.ImGui_BeginTable(ctx, "monitoring_table", 2, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
+        reaper.ImGui_TableSetupColumn(ctx, "Piste", reaper.ImGui_TableColumnFlags_WidthStretch())
+        reaper.ImGui_TableSetupColumn(ctx, "Monitoring à l'arrêt", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
+        reaper.ImGui_TableHeadersRow(ctx)
+
+        -- Parcourir toutes les pistes
+        local num_tracks = reaper.CountTracks(0)
+        for i = 0, num_tracks - 1 do
+          local track = reaper.GetTrack(0, i)
+          local _, track_name = reaper.GetTrackName(track)
+          
+          -- Vérifier si la piste contient un plugin PoulpyLoop
+          local has_poulpyloop = false
+          local fx_count = reaper.TrackFX_GetCount(track)
+          for j = 0, fx_count - 1 do
+            local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+            if fx_name:find("PoulpyLoop") then
+              has_poulpyloop = true
+              break
+            end
+          end
+
+          if has_poulpyloop then
+            reaper.ImGui_TableNextRow(ctx)
+            
+            -- Nom de la piste
+            reaper.ImGui_TableNextColumn(ctx)
+            reaper.ImGui_Text(ctx, track_name)
+
+            -- Case à cocher pour le monitoring à l'arrêt
+            reaper.ImGui_TableNextColumn(ctx)
+            local monitoring_stop = reaper.gmem_read(GMEM_MONITORING_STOP_BASE + i) == 1
+            if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. i, monitoring_stop) then
+              reaper.gmem_write(GMEM_MONITORING_STOP_BASE + i, monitoring_stop and 0 or 1)
+            end
+          end
+        end
+
+        reaper.ImGui_EndTable(ctx)
+
+        -- Explication
+        reaper.ImGui_Separator(ctx)
+        reaper.ImGui_TextWrapped(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt, permettant d'entendre le signal brut et les effets qui suivent le plugin PoulpyLoop.")
+
         reaper.ImGui_EndTabItem(ctx)
       end
 
