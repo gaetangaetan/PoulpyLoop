@@ -1,0 +1,512 @@
+desc:PoulpyLoop_v0536_stats_fix
+options:maxmem=32000000
+options:gmem=PoulpyLoopy
+
+in_pin:Left In
+in_pin:Right In
+out_pin:Left Out
+out_pin:Right Out
+
+slider1:40<0,256,1>Fade (échantillons)
+slider2:0.0<-24,24,1>Pitch Control
+
+@init
+
+ext_noinit = 1;
+
+NUM_NOTES = 128;
+UNIT_SIZE = 4096 * 64;
+max_units = 32000000 / UNIT_SIZE;
+
+debug_str     = 0;
+time_left_str = 100;
+current_display= 200;
+note_start    = 300;
+note_length   = note_start    + NUM_NOTES;
+units_count   = note_length   + NUM_NOTES;
+is_playing    = units_count   + NUM_NOTES;
+is_recording  = is_playing    + NUM_NOTES;
+read_pos      = is_recording  + NUM_NOTES;
+rec_mode      = read_pos      + NUM_NOTES;
+next_free_unit = rec_mode  + NUM_NOTES;
+the_memory    = next_free_unit + 1;
+
+i = 0;
+loop(NUM_NOTES,
+  note_start[i] = 0;
+  note_length[i] = 0;
+  units_count[i] = 0;
+  is_playing[i] = 0;
+  is_recording[i] = 0;
+  read_pos[i] = 0;
+  rec_mode[i] = 0;
+  i += 1;
+);
+next_free_unit[0] = 0;
+
+i = 0;
+loop(NUM_NOTES,
+  loop_type[i] = -1;
+  i += 1;
+);
+
+strcpy(current_display, "Sampler init OK");
+strcpy(time_left_str, "Loading...");
+strcpy(debug_str, "");
+
+volumeFactor = 1.0;
+panFactor    = 0.5;
+mode = 0;
+monitoring = 1; // Par défaut, le monitoring est activé (ON)
+
+last_loop_type = -2;
+last_loop_mode = -2;
+last_volume = -1.0;
+last_pan = -1.0;
+last_monitoring = -1;
+
+// Variable pour stocker le dernier pitch
+last_pitch = 0.5; // Valeur par défaut (milieu)
+
+// Indices gmem pour les modes
+GMEM_RECORD_MONITOR_MODE = 0;  // gmem[0] pour le mode d'enregistrement des loops MONITOR
+GMEM_PLAYBACK_MODE = 1;        // gmem[1] pour le mode LIVE/PLAYBACK
+GMEM_STATS_BASE = 2;           // gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
+GMEM_NEXT_INSTANCE_ID = 194;   // gmem[194] pour le prochain ID d'instance disponible
+
+// Chercher un ID unique pour cette instance
+function get_unique_instance_id()
+(
+  // Lire le prochain ID disponible
+  next_id = gmem[GMEM_NEXT_INSTANCE_ID];
+  
+  // Si c'est la première fois, initialiser à 0
+  (next_id == 0) ? next_id = 0;
+  
+  // Incrémenter pour la prochaine instance
+  gmem[GMEM_NEXT_INSTANCE_ID] = (next_id + 1) % 64;
+  
+  // Retourner l'ID attribué
+  next_id;
+);
+
+// Attribuer un identifiant unique à cette instance
+instance_id = get_unique_instance_id();  // Un identifiant entre 0 et 63
+
+// Fonction pour récupérer le mode d'enregistrement des loops MONITOR
+function get_record_monitor_loops_mode()
+(
+  gmem[GMEM_RECORD_MONITOR_MODE];
+);
+
+// Fonction pour récupérer le mode LIVE/PLAYBACK
+function get_playback_mode()
+(
+  gmem[GMEM_PLAYBACK_MODE];
+);
+
+// Fonction pour mettre à jour les statistiques dans gmem
+function update_stats()
+(
+  // Base pour les statistiques de cette instance
+  stats_base = GMEM_STATS_BASE + instance_id * 3;
+  
+  // Calculer la mémoire utilisée en Mo (8 octets par échantillon car format 64 bits)
+  memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
+  gmem[stats_base] = memory_used_mb;
+  
+  // Calculer le temps restant en secondes
+  memory_left_seconds = time_left;
+  gmem[stats_base + 1] = memory_left_seconds;
+  
+  // Compter le nombre de notes actives
+  notes_count = 0;
+  i = 0;
+  loop(NUM_NOTES,
+    (note_length[i] > 0) ? notes_count += 1;
+    i += 1;
+  );
+  gmem[stats_base + 2] = notes_count;
+);
+
+function cc7ToGain(ccVal)
+(
+  dB = (ccVal - 64) * (20.0/64.0);
+  10^(dB/20.0);
+);
+
+function cc10ToPan(ccVal)
+(
+  ccVal / 127.0;
+);
+
+function getNoteIndex(note)
+(
+  (note >= 0 && note < 128) ? note : -1;
+);
+
+function startRecording(note, mode)
+(
+  // En mode PLAYBACK, on n'enregistre pas
+  (get_playback_mode() == 1) ? (
+    sprintf(current_display, "Mode PLAYBACK: enregistrement désactivé");
+    0; // Ne rien faire
+  ) : (
+    note_length[note] = 0;
+    units_count[note] = 1;
+    is_recording[note] = 1;
+    is_playing[note] = 0;
+    read_pos[note] = 0;
+    rec_mode[note] = mode;
+    nu = next_free_unit[0];
+    (nu >= max_units) ? (
+      is_recording[note] = 0;
+      note_start[note] = 0;
+      strcpy(current_display, "Memo saturée: impossible rec");
+    ) : (
+      note_start[note] = nu * UNIT_SIZE;
+      next_free_unit[0] = nu + 1;
+    );
+  );
+);
+
+function expandRecording(note)
+(
+  // En mode PLAYBACK, on n'étend pas l'enregistrement
+  (get_playback_mode() == 1) ? (
+    0; // Ne rien faire
+  ) : (
+    nu = next_free_unit[0];
+    curUnits = units_count[note];
+    (nu < max_units) ? (
+      units_count[note] = curUnits + 1;
+      next_free_unit[0] = nu + 1;
+    ) : (
+      is_recording[note] = 0;
+      strcpy(current_display, "Memo full en cours d'enregistrement");
+    );
+  );
+);
+
+@slider
+fade_samples = slider1;
+
+@block
+while (
+  midirecv(offset, msg1, msg2, msg3) ? (
+    status = msg1 & $xF0;
+    note   = msg2;
+    vel    = msg3;
+    idx    = getNoteIndex(note);
+
+    (status == $xB0) ? (
+      (idx >= 0) ? (
+        (msg2 == 7) ? (
+            volumeFactor = cc7ToGain(msg3);
+            sprintf(current_display, "CC7 => volume=%.2f", volumeFactor);
+        ) : (msg2 == 9) ? (
+            // CC09 : pitch = valeur - 64
+            slider2 = msg3 - 64;
+            sprintf(current_display, "CC9 => pitch=%d", slider2);
+        ) : (msg2 == 10) ? (
+            panFactor = cc10ToPan(msg3);
+            sprintf(current_display, "CC10 => pan=%.2f", panFactor);
+        ) : (msg2 == 8) ?(
+            mode = msg3;
+        ) : (msg2 == 11) ? (
+            monitoring = msg3 > 0 ? 1 : 0;
+            sprintf(current_display, "CC11 => monitoring=%s", monitoring ? "ON" : "OFF");
+        );
+      );
+    );
+
+    (status == $x90 && vel > 0) ? (
+      (idx >= 0) ? (
+        // Vérifier si on est en mode PLAYBACK
+        playback_mode = get_playback_mode();
+        
+        (vel == 1) ? ( // RECORD
+          (playback_mode == 1) ? (
+            // En mode PLAYBACK, on lit la loop RECORD si elle existe
+            (note_length[idx] > 0) ? (
+              is_playing[idx] = 1;
+              read_pos[idx] = 0;
+              is_recording[idx] = 0;
+              loop_type[idx] = 0; // Garder le type RECORD
+              sprintf(current_display, "Playback: lecture RECORD note=%d", note);
+            ) : (
+              sprintf(current_display, "Playback: pas de contenu pour RECORD note=%d", note);
+            );
+          ) : (
+            // En mode LIVE, comportement normal
+            startRecording(idx, mode);
+            loop_type[idx] = 0;
+            sprintf(current_display, "Rec note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+          );
+        )
+        : (vel == 2) ? ( // PLAY
+          (note_length[idx] > 0) ? (
+            is_playing[idx] = 1;
+            read_pos[idx] = 0;
+            is_recording[idx] = 0;
+            loop_type[idx] = 1;
+            // Envoyer le message CC09 pour le pitch
+            midisend(offset, $xB0, 9, 64 + note - 60); // 60 = note MIDI pour le Do central
+            sprintf(current_display, "Play note=%d vel=%d", note, vel);
+          ) : sprintf(current_display, "Pas de sample pour %d", note)
+        )
+        : (vel == 3) ? ( // OVERDUB
+          (playback_mode == 1) ? (
+            // En mode PLAYBACK, on lit la loop OVERDUB si elle existe
+            (note_length[idx] > 0) ? (
+              is_playing[idx] = 1;
+              read_pos[idx] = 0;
+              is_recording[idx] = 0; // Pas d'enregistrement en mode PLAYBACK
+              loop_type[idx] = 2; // Garder le type OVERDUB
+              sprintf(current_display, "Playback: lecture OVERDUB note=%d", note);
+            ) : (
+              sprintf(current_display, "Playback: pas de contenu pour OVERDUB note=%d", note);
+            );
+          ) : (
+            // En mode LIVE, comportement normal
+            //Si la boucle n'existait pas, on démarre un enregistrement normal.
+            (note_length[idx] == 0) ? (
+              startRecording(idx, mode);
+            ) : (
+              is_recording[idx] = 1;  // Activer l'enregistrement
+              read_pos[idx] = 0;      // Réinitialisation de la position de lecture
+            );
+            loop_type[idx] = 2;
+            is_playing[idx] = 1;      // Activer la lecture en mode OVERDUB
+            sprintf(current_display, "Overdub note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+          );
+        )
+        : (vel == 4) ? ( // MONITOR
+          (playback_mode == 1) ? (
+            // En mode PLAYBACK, on lit la loop MONITOR si elle existe
+            (note_length[idx] > 0) ? (
+              is_playing[idx] = 1;
+              read_pos[idx] = 0;
+              is_recording[idx] = 0; // Pas d'enregistrement en mode PLAYBACK
+              loop_type[idx] = 3; // Garder le type MONITOR
+              sprintf(current_display, "Playback: lecture MONITOR note=%d", note);
+            ) : (
+              sprintf(current_display, "Playback: pas de contenu pour MONITOR note=%d", note);
+            );
+          ) : (
+            // En mode LIVE, comportement normal
+            is_playing[idx] = 1;
+            loop_type[idx] = 3;
+            
+            // Vérifier si on doit enregistrer les loops MONITOR
+            record_monitor_mode = get_record_monitor_loops_mode();
+            (record_monitor_mode == 1) ? (
+              // Si le mode est activé, on enregistre comme pour RECORD
+              startRecording(idx, mode);
+              sprintf(current_display, "Monitor+Rec note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+            ) : (
+              sprintf(current_display, "Monitor note=%d vel=%d", note, vel);
+            );
+          );
+        )
+        : sprintf(current_display, "Vel. non supportée: %d", vel)
+      );
+    );
+
+    (status == $x80 || (status == $x90 && vel == 0)) ? ( // NOTE OFF
+      (idx >= 0) ? (
+        is_playing[idx] = 0;
+        is_recording[idx] = 0;
+        loop_type[idx] = -1;
+        // Remettre le pitch à sa valeur par défaut quand aucune boucle n'est active
+        any_playing = 0;
+        i = 0;
+        loop(NUM_NOTES,
+          any_playing += (loop_type[i] == 1);
+          i += 1;
+        );
+        (any_playing == 0) ? (
+          // Envoyer CC09 = 64 pour un pitch de 0
+          midisend(offset, $xB0, 9, 64);
+        );
+        strcpy(current_display, "Note off");
+      );
+    );
+    offset += 1;
+  );
+);
+
+units_used = next_free_unit[0];
+units_left = max_units - units_used;
+samples_left = units_left * UNIT_SIZE;
+time_left = samples_left / srate;
+sprintf(time_left_str, "Memo left: %.1f s", time_left);
+
+// Mettre à jour les statistiques dans gmem
+update_stats();
+
+@sample
+
+inL = spl0;
+inR = spl1;
+
+recL = 0;
+recR = 0;
+playL = 0;
+playR = 0;
+monL = 0;
+monR = 0;
+
+// Calcul des gains pour le pan sinusoïdal
+gainL = cos($pi * 0.5 * panFactor) * sqrt(2);
+gainR = sin($pi * 0.5 * panFactor) * sqrt(2);
+
+// Variable pour détecter si au moins une boucle est active
+any_loop_active = 0;
+
+// Vérifier si on est en mode PLAYBACK
+playback_mode = get_playback_mode();
+
+i = 0;
+loop(NUM_NOTES,
+  (loop_type[i] != -1) ? (  // Boucle active
+    any_loop_active = 1;
+    curLen = note_length[i];
+    unitCount = units_count[i];
+    capacity = unitCount * UNIT_SIZE;
+    
+    // Lire d'abord le contenu actuel (pour tous les types en mode PLAYBACK, ou PLAY et OVERDUB en mode LIVE)
+    (playback_mode == 1 || loop_type[i] == 1 || loop_type[i] == 2) ? (
+      pos = read_pos[i];
+      
+      (curLen > 0) ? (
+        loopPos = pos % curLen;
+        
+        // Calcul des enveloppes de fade
+        fade_gain = 1.0;
+        (fade_samples > 0) ? (
+          (loopPos < fade_samples) ? (
+            // Fade in au début
+            fade_gain = loopPos / fade_samples;
+          ) : (loopPos >= curLen - fade_samples) ? (
+            // Fade out à la fin
+            fade_gain = (curLen - loopPos) / fade_samples;
+          );
+        );
+        
+        (rec_mode[i] == 0) ? ( // MONO
+          sampleMono = the_memory[note_start[i] + loopPos];
+          playL += sampleMono * volumeFactor * gainL * fade_gain;
+          playR += sampleMono * volumeFactor * gainR * fade_gain;
+        ) : ( // STEREO
+          baseOfs = note_start[i] + 2*loopPos;
+          sampleL = the_memory[baseOfs];
+          sampleR = the_memory[baseOfs+1];
+          playL += sampleL * volumeFactor * gainL * fade_gain;
+          playR += sampleR * volumeFactor * gainR * fade_gain;
+        );
+      );
+    );
+
+    // Gérer l'enregistrement après la lecture (uniquement en mode LIVE)
+    (playback_mode == 0 && (loop_type[i] == 0 || loop_type[i] == 2 || (loop_type[i] == 3 && get_record_monitor_loops_mode() == 1))) ? (
+      // Appliquer volume/pan/mode *COURANTS* avant l'enregistrement
+      (mode == 0) ? ( // Mono
+        recL = inL * volumeFactor * gainL;
+        recR = inL * volumeFactor * gainR;  // Même signal en mono
+      ) : ( // Stereo
+        recL = inL * volumeFactor * gainL;
+        recR = inR * volumeFactor * gainR;
+      );
+
+      // Position d'écriture - pour OVERDUB, utiliser le même loopPos que pour la lecture
+      writePos = (loop_type[i] == 2) ? (pos % curLen) : curLen;
+      
+      (loop_type[i] == 0 || loop_type[i] == 3) ? (  // RECORD ou MONITOR avec enregistrement
+        (rec_mode[i] == 0) ? ( // Mono
+          the_memory[note_start[i] + writePos] = recL;
+        ) : ( // Stereo
+          the_memory[note_start[i] + 2*writePos] = recL;
+          the_memory[note_start[i] + 2*writePos+1] = recR;
+        );
+        
+        // Incrémenter la longueur uniquement pour RECORD ou MONITOR avec enregistrement
+        note_length[i] = curLen + 1;
+        (curLen + 1 >= capacity) ? (expandRecording(i));
+        
+      ) : (  // OVERDUB - ici on ADDITIONNE au lieu de remplacer
+        (curLen > 0) ? (  // Seulement si on a déjà du contenu
+          (rec_mode[i] == 0) ? ( // Mono
+            the_memory[note_start[i] + writePos] += recL;
+          ) : ( // Stereo
+            the_memory[note_start[i] + 2*writePos] += recL;
+            the_memory[note_start[i] + 2*writePos+1] += recR;
+          );
+        ) : (
+          // Si longueur=0 en OVERDUB, traiter comme RECORD
+          (rec_mode[i] == 0) ? ( // Mono
+            the_memory[note_start[i] + writePos] = recL;
+          ) : ( // Stereo
+            the_memory[note_start[i] + 2*writePos] = recL;
+            the_memory[note_start[i] + 2*writePos+1] = recR;
+          );
+          // Incrémenter la longueur
+          note_length[i] = curLen + 1;
+          (curLen + 1 >= capacity) ? (expandRecording(i));
+        );
+      );
+    );
+
+    // Incrémentation du read_pos *pour tous les modes actifs*
+    read_pos[i] = read_pos[i] + 1;
+    
+  ); // Fin de (loop_type[i] != -1)
+  i += 1;
+); // Fin de loop(NUM_NOTES)
+
+// Monitoring avec pan sinusoïdal (uniquement si une boucle est active et qu'on n'est pas en mode PLAYBACK)
+(monitoring && any_loop_active && playback_mode == 0) ? (
+  (mode == 0) ? ( // Mono 
+    monL = inL * volumeFactor * gainL;
+    monR = inL * volumeFactor * gainR;  // Même signal en mono
+  ) : ( // Stereo
+    monL = inL * volumeFactor * gainL;
+    monR = inR * volumeFactor * gainR;
+  );
+);
+
+// Sortie: monitoring + lecture (si applicable)
+spl0 = monL + playL;
+spl1 = monR + playR;
+
+@gfx
+gfx_clear = 0;
+gfx_setfont(1, "Arial", 30);
+gfx_set(1,1,1,1);
+
+gfx_x = 10;
+gfx_y = 10;
+gfx_drawstr(current_display);
+
+gfx_x = 10;
+gfx_y = 50;
+gfx_drawstr(time_left_str);
+
+// Afficher l'identifiant de l'instance et la quantité de mémoire utilisée
+memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
+sprintf(debug_str, "Instance ID: %d | Mem: %.1f MB | Notes: %d", instance_id, memory_used_mb, gmem[GMEM_STATS_BASE + instance_id * 3 + 2]);
+gfx_x = 10;
+gfx_y = 130;
+gfx_drawstr(debug_str);
+
+// Afficher le mode actuel
+playback_mode = get_playback_mode();
+gfx_x = 10;
+gfx_y = 90;
+(playback_mode == 1) ? (
+  gfx_set(1, 0.5, 0.5, 1); // Rouge pour PLAYBACK
+  gfx_drawstr("Mode: PLAYBACK");
+) : (
+  gfx_set(0.5, 1, 0.5, 1); // Vert pour LIVE
+  gfx_drawstr("Mode: LIVE");
+);

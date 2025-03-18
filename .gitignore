@@ -1,0 +1,10 @@
+# Ignorer tout
+*
+
+# Sauf les trois fichiers spécifiques
+!Effects/PoulpyLoop
+!Scripts/mrpoulpy/PoulpyLoopy.lua
+!Scripts/mrpoulpy/PoulpyLoopyService.lua
+
+# Ne pas ignorer le .gitignore lui-même
+!.gitignore 
