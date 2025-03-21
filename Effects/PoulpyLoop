@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0537_github_unique
+desc:PoulpyLoop_v0538_avantO1
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
@@ -20,6 +20,7 @@ UNIT_SIZE = 4096 * 64;
 max_units = 32000000 / UNIT_SIZE;
 
 debug_str     = 0;
+debug_str2    = 50; // Nouveau buffer pour le débogage
 time_left_str = 100;
 current_display= 200;
 note_start    = 300;
@@ -54,6 +55,7 @@ loop(NUM_NOTES,
 strcpy(current_display, "Sampler init OK");
 strcpy(time_left_str, "Loading...");
 strcpy(debug_str, "");
+strcpy(debug_str2, "");
 
 volumeFactor = 1.0;
 panFactor    = 0.5;
@@ -69,12 +71,28 @@ last_monitoring = -1;
 // Variable pour stocker le dernier pitch
 last_pitch = 0.5; // Valeur par défaut (milieu)
 
+// Variables pour la synchronisation des offsets
+using_offsets = 0;
+offset_position = 0;
+measure_duration = 0;
+play_state = 0;
+track_id_found = -1;
+
 // Indices gmem pour les modes
 GMEM_RECORD_MONITOR_MODE = 0;  // gmem[0] pour le mode d'enregistrement des loops MONITOR
 GMEM_PLAYBACK_MODE = 1;        // gmem[1] pour le mode LIVE/PLAYBACK
 GMEM_STATS_BASE = 2;           // gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
 GMEM_NEXT_INSTANCE_ID = 194;   // gmem[194] pour le prochain ID d'instance disponible
-GMEM_MONITORING_STOP_BASE = 195;  // Base pour le monitoring à l'arrêt
+GMEM_MONITORING_STOP_BASE = 195;  // gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
+GMEM_NOTE_START_POS_BASE = 259;  // gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
+GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
+
+// Nouveaux indices pour la synchronisation MIDI
+GMEM_MIDI_SYNC_DATA_BASE = 16001; // gmem[16001] à gmem[16001+64*3-1] pour les données de synchronisation MIDI (64 pistes max)
+
+// Variable pour stocker l'offset en cours pour cette instance
+current_offset = 0; // Valeur en secondes
+has_offset = 0;     // Flag indiquant si un offset valide est disponible
 
 // Chercher un ID unique pour cette instance
 function get_unique_instance_id()
@@ -199,12 +217,39 @@ gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 // Synchroniser le slider avec gmem
 slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
+// Obtenir la position de lecture actuelle
+play_position = play_position_samples / srate;
+
+// Détection simple de l'état de lecture
+prev_play_state = play_state;
+play_state = (play_state > 0) ? 1 : 0;
+
+// Lire l'offset pour cette instance depuis la mémoire partagée
+sync_base = GMEM_MIDI_SYNC_DATA_BASE + instance_id * 3;
+track_id = gmem[sync_base];
+offset_position = gmem[sync_base + 1];
+measure_duration = gmem[sync_base + 2];
+
+// Mettre à jour la variable using_offsets pour l'affichage dans l'interface
+using_offsets = (offset_position > 0 && measure_duration > 0) ? 1 : 0;
+
+// Message de débogage
+sprintf(debug_str, "État: %s | Track: %d | Offset: %.3f | Durée: %.3f", 
+         play_state ? "LECTURE" : "ARRÊTÉ",
+         track_id, offset_position, measure_duration);
+
+// Variable pour suivre si des notes ont été traitées dans ce bloc
+midi_notes_processed = 0;
+
 while (
   midirecv(offset, msg1, msg2, msg3) ? (
     status = msg1 & $xF0;
     note   = msg2;
     vel    = msg3;
     idx    = getNoteIndex(note);
+    
+    // Augmenter le compteur de notes MIDI traitées
+    (status == $x90 && vel > 0) ? midi_notes_processed += 1;
 
     (status == $xB0) ? (
       (idx >= 0) ? (
@@ -227,8 +272,20 @@ while (
       );
     );
 
-    (status == $x90 && vel > 0) ? (
+    (status == $x90 && vel > 0) ? (  // Note ON
       (idx >= 0) ? (
+        // Stocker la position de début de la note dans gmem
+        note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
+        gmem[note_pos_index] = play_position + offset / srate;
+        
+        // Stocker la longueur de la boucle en secondes si elle existe
+        loop_len_index = GMEM_LOOP_LENGTH_BASE + instance_id * 128 + idx;
+        (note_length[idx] > 0) ? (
+          gmem[loop_len_index] = note_length[idx] / srate;
+        ) : (
+          gmem[loop_len_index] = -1;
+        );
+        
         // Vérifier si on est en mode PLAYBACK
         playback_mode = get_playback_mode();
         
@@ -254,12 +311,13 @@ while (
         : (vel == 2) ? ( // PLAY
           (note_length[idx] > 0) ? (
             is_playing[idx] = 1;
+            
+            // Ne plus appliquer l'offset ici, juste commencer au début
             read_pos[idx] = 0;
+            sprintf(debug_str2, "PLAY: note=%d pos=0/%d", note, note_length[idx]);
+            
             is_recording[idx] = 0;
             loop_type[idx] = 1;
-            // Envoyer le message CC09 pour le pitch
-            midisend(offset, $xB0, 9, 64 + note - 60); // 60 = note MIDI pour le Do central
-            sprintf(current_display, "Play note=%d vel=%d", note, vel);
           ) : sprintf(current_display, "Pas de sample pour %d", note)
         )
         : (vel == 3) ? ( // OVERDUB
@@ -267,10 +325,13 @@ while (
             // En mode PLAYBACK, on lit la loop OVERDUB si elle existe
             (note_length[idx] > 0) ? (
               is_playing[idx] = 1;
+              
+              // Ne plus appliquer l'offset ici non plus
               read_pos[idx] = 0;
-              is_recording[idx] = 0; // Pas d'enregistrement en mode PLAYBACK
-              loop_type[idx] = 2; // Garder le type OVERDUB
-              sprintf(current_display, "Playback: lecture OVERDUB note=%d", note);
+              sprintf(debug_str2, "OVERDUB: note=%d pos=0/%d", note, note_length[idx]);
+              
+              is_recording[idx] = playback_mode == 0;
+              loop_type[idx] = 2;
             ) : (
               sprintf(current_display, "Playback: pas de contenu pour OVERDUB note=%d", note);
             );
@@ -322,6 +383,14 @@ while (
 
     (status == $x80 || (status == $x90 && vel == 0)) ? ( // NOTE OFF
       (idx >= 0) ? (
+        // Réinitialiser la position de début de la note
+        note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
+        gmem[note_pos_index] = -1;
+        
+        // Réinitialiser l'offset pour cette instance
+        sync_base = GMEM_MIDI_SYNC_DATA_BASE + instance_id * 3;
+        gmem[sync_base + 1] = 0;  // Offset = 0
+        
         is_playing[idx] = 0;
         is_recording[idx] = 0;
         loop_type[idx] = -1;
@@ -353,7 +422,6 @@ sprintf(time_left_str, "Memo left: %.1f s", time_left);
 update_stats();
 
 @sample
-
 inL = spl0;
 inR = spl1;
 
@@ -382,36 +450,49 @@ loop(NUM_NOTES,
     unitCount = units_count[i];
     capacity = unitCount * UNIT_SIZE;
     
-    // Lire d'abord le contenu actuel (pour tous les types en mode PLAYBACK, ou PLAY et OVERDUB en mode LIVE)
-    (playback_mode == 1 || loop_type[i] == 1 || loop_type[i] == 2) ? (
+    // Incrémenter normalement et boucler
+    (is_playing[i] && curLen > 0) ? (
+      read_pos[i] += 1;
+      (read_pos[i] >= curLen) ? read_pos[i] = 0;
       pos = read_pos[i];
       
-      (curLen > 0) ? (
-        loopPos = pos % curLen;
-        
-        // Calcul des enveloppes de fade
-        fade_gain = 1.0;
-        (fade_samples > 0) ? (
-          (loopPos < fade_samples) ? (
-            // Fade in au début
-            fade_gain = loopPos / fade_samples;
-          ) : (loopPos >= curLen - fade_samples) ? (
-            // Fade out à la fin
-            fade_gain = (curLen - loopPos) / fade_samples;
-          );
+      // Calculer la position de lecture effective avec l'offset
+      effective_pos = offset_position > 0 ? 
+        floor((pos + floor(offset_position * srate)) % curLen) : 
+        pos;
+      
+      // Debug pour première piste
+      (i == 0) ? (
+        sprintf(debug_str2, "Lecture: pos=%d/%d (offset=%.3f)", effective_pos, curLen, offset_position);
+      );
+    ) : (
+      // Si pas en lecture, maintenir la position actuelle
+      pos = read_pos[i];
+      effective_pos = pos;
+    );
+    
+    // Lire le contenu actuel si en lecture ou en mode particulier
+    ((is_playing[i] && curLen > 0) || playback_mode == 1) ? (
+      // Calcul des enveloppes de fade
+      fade_gain = 1.0;
+      (fade_samples > 0) ? (
+        (effective_pos < fade_samples) ? (
+          fade_gain = effective_pos / fade_samples;
+        ) : (effective_pos >= curLen - fade_samples) ? (
+          fade_gain = (curLen - effective_pos) / fade_samples;
         );
-        
-        (rec_mode[i] == 0) ? ( // MONO
-          sampleMono = the_memory[note_start[i] + loopPos];
-          playL += sampleMono * volumeFactor * gainL * fade_gain;
-          playR += sampleMono * volumeFactor * gainR * fade_gain;
-        ) : ( // STEREO
-          baseOfs = note_start[i] + 2*loopPos;
-          sampleL = the_memory[baseOfs];
-          sampleR = the_memory[baseOfs+1];
-          playL += sampleL * volumeFactor * gainL * fade_gain;
-          playR += sampleR * volumeFactor * gainR * fade_gain;
-        );
+      );
+      
+      (rec_mode[i] == 0) ? ( // MONO
+        sampleMono = the_memory[note_start[i] + effective_pos];
+        playL += sampleMono * volumeFactor * gainL * fade_gain;
+        playR += sampleMono * volumeFactor * gainR * fade_gain;
+      ) : ( // STEREO
+        baseOfs = note_start[i] + 2*effective_pos;
+        sampleL = the_memory[baseOfs];
+        sampleR = the_memory[baseOfs+1];
+        playL += sampleL * volumeFactor * gainL * fade_gain;
+        playR += sampleR * volumeFactor * gainR * fade_gain;
       );
     );
 
@@ -463,16 +544,13 @@ loop(NUM_NOTES,
         );
       );
     );
-
-    // Incrémentation du read_pos *pour tous les modes actifs*
-    read_pos[i] = read_pos[i] + 1;
-    
-  ); // Fin de (loop_type[i] != -1)
+  );
   i += 1;
-); // Fin de loop(NUM_NOTES)
+);
 
-// Monitoring avec pan sinusoïdal (uniquement si une boucle est active et qu'on n'est pas en mode PLAYBACK)
-(monitoring && any_loop_active && playback_mode == 0) ? (
+// Monitoring avec pan sinusoïdal (uniquement si une boucle est active, qu'on n'est pas en mode PLAYBACK
+// ET que la lecture est active OU que le monitoring à l'arrêt n'est pas activé)
+(monitoring && any_loop_active && playback_mode == 0 && (play_state || !slider3)) ? (
   (mode == 0) ? ( // Mono 
     monL = inL * volumeFactor * gainL;
     monR = inL * volumeFactor * gainR;  // Même signal en mono
@@ -482,20 +560,21 @@ loop(NUM_NOTES,
   );
 );
 
-// Vérifier si le monitoring à l'arrêt est activé et si la lecture est arrêtée
+// Complètement réorganiser la logique de sortie pour éviter les additifs
 (!play_state && slider3) ? (
-  // Routage direct des entrées vers les sorties avec le volume et le pan actuels
-  (mode == 0) ? ( // Mono
-    spl0 = inL * volumeFactor * gainL;
-    spl1 = inL * volumeFactor * gainR;
-  ) : ( // Stereo
-    spl0 = inL * volumeFactor * gainL;
-    spl1 = inR * volumeFactor * gainR;
-  );
+  // Monitoring à l'arrêt est prioritaire quand lecture arrêtée - signal DIRECT sans traitement
+  spl0 = inL;
+  spl1 = inR;
 ) : (
-  // Comportement normal
-  spl0 = monL + playL;
-  spl1 = monR + playR;
+  // Lecture normale, uniquement le contenu joué + monitoring normal
+  spl0 = playL;
+  spl1 = playR;
+  
+  // Ajouter le monitoring UNIQUEMENT si on n'est pas en mode monitoring à l'arrêt
+  (!(!play_state && slider3)) ? (
+    spl0 += monL;
+    spl1 += monR;
+  );
 );
 
 @gfx
@@ -503,17 +582,32 @@ gfx_clear = 0;
 gfx_setfont(1, "Arial", 30);
 gfx_set(1,1,1,1);
 
+// Afficher l'état de lecture en haut
 gfx_x = 10;
 gfx_y = 10;
+gfx_set(1, 1, 1, 1);
+gfx_drawstr("État de lecture: ");
+gfx_x += 200;
+(play_state >= 1) ? (
+  gfx_set(0.5, 1, 0.5, 1); // Vert pour LECTURE
+  gfx_drawstr("LECTURE");
+) : (
+  gfx_set(1, 0.5, 0.5, 1); // Rouge pour ARRÊTÉ
+  gfx_drawstr("ARRÊTÉ");
+);
+
+// Afficher les autres informations
+gfx_x = 10;
+gfx_y = 50;
+gfx_set(1, 1, 1, 1);
 gfx_drawstr(current_display);
 
 gfx_x = 10;
-gfx_y = 50;
+gfx_y = 90;
 gfx_drawstr(time_left_str);
 
 // Afficher l'identifiant de l'instance et la quantité de mémoire utilisée
 memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
-sprintf(debug_str, "Instance ID: %d | Mem: %.1f MB | Notes: %d", instance_id, memory_used_mb, gmem[GMEM_STATS_BASE + instance_id * 3 + 2]);
 gfx_x = 10;
 gfx_y = 130;
 gfx_drawstr(debug_str);
@@ -521,7 +615,7 @@ gfx_drawstr(debug_str);
 // Afficher le mode actuel
 playback_mode = get_playback_mode();
 gfx_x = 10;
-gfx_y = 90;
+gfx_y = 170;
 (playback_mode == 1) ? (
   gfx_set(1, 0.5, 0.5, 1); // Rouge pour PLAYBACK
   gfx_drawstr("Mode: PLAYBACK");
@@ -529,3 +623,22 @@ gfx_y = 90;
   gfx_set(0.5, 1, 0.5, 1); // Vert pour LIVE
   gfx_drawstr("Mode: LIVE");
 );
+
+// Afficher l'état de la synchronisation
+gfx_x = 200;
+gfx_y = 170;
+(using_offsets) ? (
+  gfx_set(0.5, 1, 0.5, 1); // Vert pour actif
+  gfx_drawstr("OFFSETS ACTIFS");
+) : (
+  gfx_set(1, 0.5, 0.5, 1); // Rouge pour inactif
+  gfx_drawstr("OFFSETS INACTIFS");
+);
+
+// Afficher l'état de la synchronisation détaillé
+gfx_x = 10;
+gfx_y = 210;
+gfx_set(1, 1, 1, 1); // Blanc
+sprintf(debug_str2, "Play state: %d | Track: %d | Offset: %.3f | Mesure: %.3f", 
+        play_state, track_id, offset_position, measure_duration);
+gfx_drawstr(debug_str2);

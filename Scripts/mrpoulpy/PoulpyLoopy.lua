@@ -38,24 +38,62 @@
 local reaper = reaper
 local ctx = reaper.ImGui_CreateContext("PoulpyLoopy")
 
+
 --------------------------------------------------------------------------------
 -- Vérification et démarrage du service
 --------------------------------------------------------------------------------
 local service_running = reaper.GetExtState("PoulpyLoopyService", "running")
 if service_running ~= "1" then
   -- Le service n'est pas en cours d'exécution, on le démarre
-  --reaper.ShowConsoleMsg("Démarrage de PoulpyLoopyService...\n")
+  reaper.ShowConsoleMsg("PoulpyLoopy: Tentative de démarrage de PoulpyLoopyService...\n")
   
   -- Lancer le script de service en tant que script séparé
   local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/PoulpyLoopyService.lua"
+  reaper.ShowConsoleMsg("Chemin du script: " .. script_path .. "\n")
   
   -- Vérifier si ReaScriptAPI est disponible
   if reaper.APIExists("ReaScriptAPI_LoadScript") then
-    reaper.ReaScriptAPI_LoadScript(script_path, true) -- true = async (en arrière-plan)
+    reaper.ShowConsoleMsg("Méthode de lancement: ReaScriptAPI_LoadScript\n")
+    local result = reaper.ReaScriptAPI_LoadScript(script_path, true) -- true = async (en arrière-plan)
+    reaper.ShowConsoleMsg("Résultat du lancement: " .. tostring(result) .. "\n")
   else
     -- Méthode alternative si ReaScriptAPI n'est pas disponible
-    reaper.Main_OnCommand(reaper.NamedCommandLookup("_RS1c6ad1164e1d70e390b9ab456d01d691824835c0"), 0)
+    reaper.ShowConsoleMsg("Méthode de lancement: AddRemoveReaScript\n")
+    
+    -- Obtenir le Command ID dynamiquement
+    local cmd_id = reaper.AddRemoveReaScript(true, 0, script_path, true)
+    if cmd_id > 0 then
+      reaper.ShowConsoleMsg("Command ID obtenu: " .. tostring(cmd_id) .. "\n")
+      reaper.Main_OnCommand(cmd_id, 0)
+    else
+      reaper.ShowConsoleMsg("ERREUR: Impossible d'obtenir le Command ID pour " .. script_path .. "\n")
+      reaper.ShowConsoleMsg("Vérifiez que le fichier existe et que SWS est installé.\n")
+    end
   end
+  
+  -- Vérifier après un court délai si le service a démarré
+  reaper.defer(function()
+    local timeout = 30 -- Attendre maximum 3 secondes (10 vérifications/seconde)
+    local check_interval = 0.1
+    
+    local function check_service_started()
+      timeout = timeout - 1
+      local is_running = reaper.GetExtState("PoulpyLoopyService", "running")
+      
+      if is_running == "1" then
+        reaper.ShowConsoleMsg("PoulpyLoopyService démarré avec succès!\n")
+      elseif timeout > 0 then
+        reaper.defer(check_service_started)
+      else
+        reaper.ShowConsoleMsg("ERREUR: PoulpyLoopyService n'a pas démarré après 3 secondes.\n")
+        reaper.ShowConsoleMsg("Vérifiez que le fichier existe et que SWS/ReaScriptAPI est installé.\n")
+      end
+    end
+    
+    reaper.defer(check_service_started)
+  end)
+else
+  reaper.ShowConsoleMsg("PoulpyLoopy: PoulpyLoopyService est déjà en cours d'exécution.\n")
 end
 
 -- Pour les opérations locales, on se connecte aussi à gmem
@@ -64,7 +102,7 @@ reaper.gmem_attach("PoulpyLoopy")
 --------------------------------------------------------------------------------
 -- Constantes globales
 --------------------------------------------------------------------------------
-local VERSION = "0013"
+local VERSION = "0014"
 
 --------------------------------------------------------------------------------
 -- Variables globales pour Options de Loop
@@ -88,13 +126,26 @@ local selected_click_track_index = 0  -- Pour le menu déroulant des pistes de c
 --------------------------------------------------------------------------------
 local record_monitor_loops = false  -- Par défaut, on n'enregistre pas les loops MONITOR
 local playback_mode = false         -- Par défaut, on est en mode LIVE (false = LIVE, true = PLAYBACK)
+local last_message_check = 0        -- Pour limiter la fréquence de lecture des messages
+local message_history = {}          -- Table pour stocker l'historique des messages
+local MAX_HISTORY_LINES = 20        -- Nombre maximum de lignes à conserver
 
 -- Indices gmem pour les modes
 local GMEM_RECORD_MONITOR_MODE = 0  -- gmem[0] pour le mode d'enregistrement des loops MONITOR
 local GMEM_PLAYBACK_MODE = 1        -- gmem[1] pour le mode LIVE/PLAYBACK
 local GMEM_STATS_BASE = 2           -- gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
 local GMEM_NEXT_INSTANCE_ID = 194   -- gmem[194] pour le prochain ID d'instance disponible
-local GMEM_MONITORING_STOP_BASE = 195 -- gmem[195] à gmem[195+64*1-1] pour le monitoring à l'arrêt (64 instances max)
+local GMEM_MONITORING_STOP_BASE = 195  -- gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
+local GMEM_NOTE_START_POS_BASE = 259  -- gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
+local GMEM_LOOP_LENGTH_BASE = 8451    -- gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
+
+-- Nouveaux indices pour la synchronisation MIDI
+local GMEM_FORCE_ANALYZE = 16000     -- gmem[16000] pour forcer l'analyse des offsets (1 = forcer)
+local GMEM_MIDI_SYNC_DATA_BASE = 16001 -- gmem[16001] à gmem[16001+64*3-1] pour les données de synchronisation MIDI (64 pistes max)
+
+-- Espace pour les messages dans gmem
+local GMEM_MESSAGE_BASE = 17000      -- gmem[17000] à gmem[17000+9999] pour les messages (10000 caractères)
+local GMEM_MESSAGE_LENGTH = 16999     -- gmem[16999] pour la longueur du message actuel
 
 -- Fonction pour charger le mode d'enregistrement des loops MONITOR depuis la mémoire de Reaper
 local function loadRecordMonitorLoopsMode()
@@ -114,6 +165,11 @@ end
 -- Fonction pour sauvegarder le mode LIVE/PLAYBACK dans la mémoire de Reaper
 local function savePlaybackMode()
     reaper.gmem_write(GMEM_PLAYBACK_MODE, playback_mode and 1 or 0)
+end
+
+-- Fonction pour récupérer le mode LIVE/PLAYBACK
+local function get_playback_mode()
+    return reaper.gmem_read(GMEM_PLAYBACK_MODE) == 1
 end
 
 -- Charger les valeurs au démarrage
@@ -2109,6 +2165,196 @@ local function mainWindow()
         -- Explication
         reaper.ImGui_Separator(ctx)
         reaper.ImGui_TextWrapped(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt, permettant d'entendre le signal brut et les effets qui suivent le plugin PoulpyLoop.")
+
+        reaper.ImGui_EndTabItem(ctx)
+      end
+
+      -- Onglet "Debug" pour afficher les informations de débogage
+      if reaper.ImGui_BeginTabItem(ctx, "Debug") then
+        -- Section de gauche : Messages de débogage actuels
+        reaper.ImGui_Text(ctx, "Messages de débogage actuels :")
+        reaper.ImGui_Separator(ctx)
+        
+        -- État de lecture actuel
+        local play_state = reaper.GetPlayState()
+        local is_playing = play_state & 1
+        reaper.ImGui_Text(ctx, "État de lecture: ")
+        reaper.ImGui_SameLine(ctx)
+        if is_playing == 1 then
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x55FF55FF) -- Vert pour LECTURE
+          reaper.ImGui_Text(ctx, "LECTURE")
+        else
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF5555FF) -- Rouge pour ARRÊTÉ
+          reaper.ImGui_Text(ctx, "ARRÊTÉ")
+        end
+        reaper.ImGui_PopStyleColor(ctx)
+        
+        -- Mode actuel
+        local playback_mode = get_playback_mode()
+        reaper.ImGui_Text(ctx, "Mode: ")
+        reaper.ImGui_SameLine(ctx)
+        if playback_mode == 1 then
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF5555FF) -- Rouge pour PLAYBACK
+          reaper.ImGui_Text(ctx, "PLAYBACK")
+        else
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x55FF55FF) -- Vert pour LIVE
+          reaper.ImGui_Text(ctx, "LIVE")
+        end
+        reaper.ImGui_PopStyleColor(ctx)
+        
+        -- État de la synchronisation
+        reaper.ImGui_Text(ctx, "Synchronisation: ")
+        reaper.ImGui_SameLine(ctx)
+        
+        -- Vérifier si les offsets sont actifs
+        local using_offsets = false
+        
+        -- Parcourir les données de synchronisation pour voir s'il y a des données valides
+        for i = 0, 63 do
+          local sync_base = GMEM_MIDI_SYNC_DATA_BASE + i * 3
+          local track_id = reaper.gmem_read(sync_base)
+          if track_id >= 0 and reaper.gmem_read(sync_base + 2) > 0 then
+            using_offsets = true
+            break
+          end
+        end
+        
+        if using_offsets then
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x55FF55FF) -- Vert pour actif
+          reaper.ImGui_Text(ctx, "OFFSETS ACTIFS")
+        else
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF5555FF) -- Rouge pour inactif
+          reaper.ImGui_Text(ctx, "OFFSETS INACTIFS")
+        end
+        reaper.ImGui_PopStyleColor(ctx)
+        
+        -- Informations détaillées
+        reaper.ImGui_Separator(ctx)
+        
+        -- Créer un tableau pour afficher les informations de synchronisation
+        if reaper.ImGui_BeginTable(ctx, "sync_info", 6, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg()) then
+            -- En-têtes du tableau
+            reaper.ImGui_TableSetupColumn(ctx, "ID Piste")
+            reaper.ImGui_TableSetupColumn(ctx, "Nom Piste")
+            reaper.ImGui_TableSetupColumn(ctx, "Loop Active")
+            reaper.ImGui_TableSetupColumn(ctx, "Longueur (s)")
+            reaper.ImGui_TableSetupColumn(ctx, "Position (s)")
+            reaper.ImGui_TableSetupColumn(ctx, "Offset (s)")  -- Nouvelle colonne
+            reaper.ImGui_TableHeadersRow(ctx)
+            
+            -- Parcourir toutes les pistes avec des données de synchronisation
+            for i = 0, 63 do
+                local sync_base = GMEM_MIDI_SYNC_DATA_BASE + i * 3
+                local track_id = reaper.gmem_read(sync_base)
+                
+                if track_id >= 0 then
+                    local offset = reaper.gmem_read(sync_base + 1)
+                    local measure_duration = reaper.gmem_read(sync_base + 2)
+                    
+                    -- Obtenir les informations de la piste
+                    local track = reaper.GetTrack(0, track_id)
+                    if track then
+                        local _, track_name = reaper.GetTrackName(track)
+                        
+                        -- Trouver la loop active
+                        local active_loop = "Aucune"
+                        local loop_length = 0
+                        local item_count = reaper.CountTrackMediaItems(track)
+                        local cur_pos = reaper.GetPlayPosition()
+                        local current_item = nil
+                        
+                        for j = 0, item_count - 1 do
+                            local item = reaper.GetTrackMediaItem(track, j)
+                            local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                            local item_len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                            local item_end = item_pos + item_len
+                            
+                            if cur_pos >= item_pos and cur_pos < item_end then
+                                local take = reaper.GetActiveTake(item)
+                                if take and reaper.TakeIsMIDI(take) then
+                                    active_loop = reaper.GetTakeName(take)
+                                    loop_length = item_len
+                                    current_item = item
+                                    break
+                                end
+                            end
+                        end
+                        
+                        -- Ajouter une ligne au tableau
+                        reaper.ImGui_TableNextRow(ctx)
+                        
+                        -- ID de piste
+                        reaper.ImGui_TableNextColumn(ctx)
+                        reaper.ImGui_Text(ctx, tostring(track_id))
+                        
+                        -- Nom de piste
+                        reaper.ImGui_TableNextColumn(ctx)
+                        reaper.ImGui_Text(ctx, track_name)
+                        
+                        -- Nom de la loop active
+                        reaper.ImGui_TableNextColumn(ctx)
+                        reaper.ImGui_Text(ctx, active_loop)
+                        
+                        -- Longueur de la loop
+                        reaper.ImGui_TableNextColumn(ctx)
+                        if loop_length > 0 then
+                            reaper.ImGui_Text(ctx, string.format("%.2f", loop_length))
+                        else
+                            reaper.ImGui_Text(ctx, "---")
+                        end
+                        
+                        -- Position dans la loop
+                        reaper.ImGui_TableNextColumn(ctx)
+                        if current_item and loop_length > 0 then
+                            local item_pos = reaper.GetMediaItemInfo_Value(current_item, "D_POSITION")
+                            local current_offset = cur_pos - item_pos
+                            reaper.ImGui_Text(ctx, string.format("%.2f", current_offset))
+                        else
+                            reaper.ImGui_Text(ctx, "---")
+                        end
+                        
+                        -- Offset stocké dans gmem
+                        reaper.ImGui_TableNextColumn(ctx)
+                        if offset > 0 then
+                            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x55FF55FF) -- Vert si offset > 0
+                            reaper.ImGui_Text(ctx, string.format("%.3f", offset))
+                            reaper.ImGui_PopStyleColor(ctx)
+                        else
+                            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF5555FF) -- Rouge si offset = 0
+                            reaper.ImGui_Text(ctx, "0.000")
+                            reaper.ImGui_PopStyleColor(ctx)
+                        end
+                    end
+                end
+            end
+            
+            reaper.ImGui_EndTable(ctx)
+        end
+        
+        -- Section de droite : Messages du service
+        reaper.ImGui_Separator(ctx)
+        reaper.ImGui_Text(ctx, "Messages de PoulpyLoopyService :")
+        reaper.ImGui_Separator(ctx)
+        
+        -- Message d'information
+        reaper.ImGui_TextWrapped(ctx, "Les messages du service sont maintenant visibles dans la console de REAPER.")
+        reaper.ImGui_TextWrapped(ctx, "Ouvrez la console via Actions → Show console (ou Ctrl+Alt+C)")
+        
+        -- Boutons d'action
+        reaper.ImGui_Separator(ctx)
+        if reaper.ImGui_Button(ctx, "Forcer l'analyse des offsets") then
+            reaper.gmem_write(GMEM_FORCE_ANALYZE, 1)
+            reaper.ShowConsoleMsg("Demande d'analyse forcée des offsets envoyée\n")
+        end
+        
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx, "Redémarrer le service") then
+            -- Exécuter le script de redémarrage du service
+            local restart_script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/RestartPoulpyLoopyService.lua"
+            if reaper.APIExists("ReaScriptAPI_LoadScript") then
+                reaper.ReaScriptAPI_LoadScript(restart_script_path, true)
+            end
+        end
 
         reaper.ImGui_EndTabItem(ctx)
       end
