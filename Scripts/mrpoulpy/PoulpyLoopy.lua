@@ -1382,31 +1382,31 @@ local function DrawLoopOptionsWindow()
                 table.insert(prev_loops, 1, "(Aucun)")
                 local sel_idx = 1
                 
-                -- Trouver l'index correspondant à reference_loop
                 if reference_loop and reference_loop ~= "" then
                     local ref_trimmed = reference_loop:trim():lower()
                     for i, name in ipairs(prev_loops) do
-                        -- Comparaison insensible à la casse et après trim
                         if name:trim():lower() == ref_trimmed then
                             sel_idx = i
                             break
                         end
                         
-                        -- Vérifier si c'est juste une différence de numéro/préfixe
-                        -- "01 Loop Name" vs "Loop Name"
                         local name_without_prefix = name:match("%d%d%s+(.*)")
                         if name_without_prefix and name_without_prefix:trim():lower() == ref_trimmed then
                             sel_idx = i
                             break
                         end
                         
-                        -- Vérifier aussi l'inverse
                         local ref_without_prefix = ref_trimmed:match("%d%d%s+(.*)")
                         if ref_without_prefix and name:trim():lower() == ref_without_prefix then
                             sel_idx = i
                             break
-              end
-            end
+                        end
+                    end
+                else
+                    -- Pour le type PLAY, sélectionner le dernier élément par défaut
+                    if loop_type == "PLAY" then
+                        sel_idx = #prev_loops
+                    end
                 end
                 
                 if reaper.ImGui_BeginCombo(ctx, "Loop de Référence", prev_loops[sel_idx] or "(Aucun)") then
@@ -1417,9 +1417,9 @@ local function DrawLoopOptionsWindow()
                             reference_loop = (name == "(Aucun)") and "" or name
                         end
                         if is_sel then reaper.ImGui_SetItemDefaultFocus(ctx) end
-          end
-          reaper.ImGui_EndCombo(ctx)
-        end
+                    end
+                    reaper.ImGui_EndCombo(ctx)
+                end
 
                 if loop_type == "OVERDUB" then
                     if reaper.ImGui_RadioButton(ctx, "Mono", is_mono) then is_mono = true end
@@ -1432,6 +1432,11 @@ local function DrawLoopOptionsWindow()
 
                 local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Volume (dB)", volume_db, -20.0, 10.0, "%.2f")
                 if vol_changed then volume_db = new_vol end
+
+                -- Pour le type PLAY, monitoring OFF par défaut
+                if loop_type == "PLAY" and not reference_loop then
+                    monitoring = 0
+                end
 
                 if reaper.ImGui_RadioButton(ctx, "Monitoring ON", monitoring == 1) then monitoring = 1 end
                 reaper.ImGui_SameLine(ctx)
@@ -1560,8 +1565,8 @@ local function mainWindow()
   if visible then
     -- Création des onglets
     if reaper.ImGui_BeginTabBar(ctx, "MainTabs") then
-      -- Onglet "Options de Loop"
-      if reaper.ImGui_BeginTabItem(ctx, "Options de Loop") then
+      -- Onglet "Loop Editor" (ancien "Options de Loop")
+      if reaper.ImGui_BeginTabItem(ctx, "Loop Editor") then
         local item = reaper.GetSelectedMediaItem(0, 0)
         local take = item and reaper.GetActiveTake(item)
         if take and reaper.TakeIsMIDI(take) then
@@ -1636,6 +1641,11 @@ local function mainWindow()
                             break
                         end
                     end
+                else
+                    -- Pour le type PLAY, sélectionner le dernier élément par défaut
+                    if loop_type == "PLAY" then
+                        sel_idx = #prev_loops
+                    end
                 end
                 
                 if reaper.ImGui_BeginCombo(ctx, "Loop de Référence", prev_loops[sel_idx] or "(Aucun)") then
@@ -1661,6 +1671,11 @@ local function mainWindow()
 
                 local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Volume (dB)", volume_db, -20.0, 10.0, "%.2f")
                 if vol_changed then volume_db = new_vol end
+
+                -- Pour le type PLAY, monitoring OFF par défaut
+                if loop_type == "PLAY" and not reference_loop then
+                    monitoring = 0
+                end
 
                 if reaper.ImGui_RadioButton(ctx, "Monitoring ON", monitoring == 1) then monitoring = 1 end
                 reaper.ImGui_SameLine(ctx)
@@ -1762,8 +1777,9 @@ local function mainWindow()
         reaper.ImGui_EndTabItem(ctx)
       end
 
-      -- Onglet "Mode"
-      if reaper.ImGui_BeginTabItem(ctx, "Mode") then
+      -- Onglet "Options" (fusion de "Mode" et "Monitoring")
+      if reaper.ImGui_BeginTabItem(ctx, "Options") then
+        -- Partie 1: Options d'enregistrement (ancien onglet "Mode")
         reaper.ImGui_Text(ctx, "Options d'enregistrement :")
         reaper.ImGui_Separator(ctx)
 
@@ -1775,10 +1791,19 @@ local function mainWindow()
             new_record_monitor_loops = true
             changed = true
         end
+        
+        if reaper.ImGui_IsItemHovered(ctx) then
+            reaper.ImGui_SetTooltip(ctx, "Les loops MONITOR sont enregistrées comme les loops RECORD. Utile pour le mixage ultérieur.")
+        end
+        
         reaper.ImGui_SameLine(ctx)
         if reaper.ImGui_RadioButton(ctx, "OFF", not record_monitor_loops) then
             new_record_monitor_loops = false
             changed = true
+        end
+        
+        if reaper.ImGui_IsItemHovered(ctx) then
+            reaper.ImGui_SetTooltip(ctx, "Les loops MONITOR ne sont pas enregistrées. Idéal pour le live pour économiser la mémoire.")
         end
 
         -- Si le mode a changé, on le sauvegarde
@@ -1787,13 +1812,9 @@ local function mainWindow()
             saveRecordMonitorLoopsMode()
         end
 
-        -- Explication du mode d'enregistrement des loops MONITOR
         reaper.ImGui_Separator(ctx)
-        reaper.ImGui_TextWrapped(ctx, "Mode ON : Les loops MONITOR sont enregistrées comme les loops RECORD. Utile pour le mixage ultérieur.")
-        reaper.ImGui_TextWrapped(ctx, "Mode OFF : Les loops MONITOR ne sont pas enregistrées. Idéal pour le live pour économiser la mémoire.")
 
         -- Radio buttons pour le mode LIVE/PLAYBACK
-        reaper.ImGui_Separator(ctx)
         reaper.ImGui_Text(ctx, "Mode de fonctionnement :")
         local mode_changed = false
         local new_playback_mode = playback_mode
@@ -1801,10 +1822,19 @@ local function mainWindow()
             new_playback_mode = false
             mode_changed = true
         end
+        
+        if reaper.ImGui_IsItemHovered(ctx) then
+            reaper.ImGui_SetTooltip(ctx, "Mode normal d'enregistrement et de lecture. Les loops peuvent être modifiées.")
+        end
+        
         reaper.ImGui_SameLine(ctx)
         if reaper.ImGui_RadioButton(ctx, "PLAYBACK", playback_mode) then
             new_playback_mode = true
             mode_changed = true
+        end
+        
+        if reaper.ImGui_IsItemHovered(ctx) then
+            reaper.ImGui_SetTooltip(ctx, "Toutes les loops sont en lecture seule. Aucun enregistrement n'est possible. Idéal pour la relecture d'un projet.")
         end
 
         -- Si le mode a changé, on le sauvegarde
@@ -1813,110 +1843,66 @@ local function mainWindow()
             savePlaybackMode()
         end
 
-        -- Explication du mode LIVE/PLAYBACK
         reaper.ImGui_Separator(ctx)
-        reaper.ImGui_TextWrapped(ctx, "Mode LIVE : Mode normal d'enregistrement et de lecture. Les loops peuvent être modifiées.")
-        reaper.ImGui_TextWrapped(ctx, "Mode PLAYBACK : Toutes les loops sont en lecture seule. Aucun enregistrement n'est possible. Idéal pour la relecture d'un projet.")
 
-        reaper.ImGui_EndTabItem(ctx)
-      end
+        -- Partie 2: Monitoring à l'arrêt (ancien onglet "Monitoring")
+        reaper.ImGui_Text(ctx, "Monitoring à l'arrêt des pistes PoulpyLoop :")
+        reaper.ImGui_Separator(ctx)
 
-      -- Onglet "Importation ALK"
-      if reaper.ImGui_BeginTabItem(ctx, "Importation ALK") then
-    reaper.ImGui_Text(ctx, "Fichier ALK: ".. ((alkData and "(chargé)") or "aucun"))
-    reaper.ImGui_SameLine(ctx)
-    if reaper.ImGui_Button(ctx,"Ouvrir .alk") then
-      local ret, file= reaper.GetUserFileNameForRead("", "Fichier ALK", "alk")
-      if ret then
-        local c, err= readFile(file)
-        if not c then
-          errorMessage= err
-        else
-          alkData, errorMessage= parseALK(c)
-          selectedTrackTypeIndex=0
-          selectedTrackIndex=nil
-          selectedLoopIndex=nil
-        end
-      end
-    end
+        -- Tableau pour afficher les pistes avec PoulpyLoop
+        reaper.ImGui_BeginTable(ctx, "monitoring_table", 2, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
+        reaper.ImGui_TableSetupColumn(ctx, "Piste", reaper.ImGui_TableColumnFlags_WidthStretch())
+        reaper.ImGui_TableSetupColumn(ctx, "Monitoring à l'arrêt", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
+        reaper.ImGui_TableHeadersRow(ctx)
 
-    if alkData and reaper.ImGui_Button(ctx,"Importer le projet ALK") then
-      importProject()
-    end
-
-    reaper.ImGui_SameLine(ctx)
-    if reaper.ImGui_Button(ctx,"Préparer pour PoulpyLoopy") then
-      prepareForPoulpyLoopy()
-    end
-
-    if errorMessage and #errorMessage>0 then
-      reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF0000FF)
-      reaper.ImGui_Text(ctx,"Erreur: ".. errorMessage)
-      reaper.ImGui_PopStyleColor(ctx)
-    end
-
-    reaper.ImGui_Separator(ctx)
-
-    -- Petit affichage minimaliste si on veut
-    if alkData then
-      if reaper.ImGui_BeginCombo(ctx, "TrackType", alkData.trackTypes[selectedTrackTypeIndex].name) then
-        for i=0,4 do
-          local tt= alkData.trackTypes[i]
-          local isSel= (selectedTrackTypeIndex==i)
-          local lbl= tt.name.." ("..#tt.tracks..")"
-          if reaper.ImGui_Selectable(ctx,lbl,isSel) then
-            selectedTrackTypeIndex= i
-            selectedTrackIndex=nil
-            selectedLoopIndex=nil
-          end
-          if isSel then reaper.ImGui_SetItemDefaultFocus(ctx) end
-        end
-        reaper.ImGui_EndCombo(ctx)
-      end
-
-      local tracks= alkData.trackTypes[selectedTrackTypeIndex].tracks or {}
-      local trackLabel= (#tracks>0 and tracks[1].name) or "Aucune piste"
-      if reaper.ImGui_BeginCombo(ctx,"Tracks", trackLabel) then
-        for i,tr in ipairs(tracks) do
-          local isSel=(selectedTrackIndex==i)
-          if reaper.ImGui_Selectable(ctx, tr.name, isSel) then
-            selectedTrackIndex=i
-            selectedLoopIndex=nil
-          end
-          if isSel then reaper.ImGui_SetItemDefaultFocus(ctx) end
-        end
-        reaper.ImGui_EndCombo(ctx)
-      end
-
-      if selectedTrackIndex and tracks[selectedTrackIndex] then
-        local theTr= tracks[selectedTrackIndex]
-        local loops= theTr.loops or {}
-        local firstLoopName= (#loops>0 and loops[1].name) or "Aucune loop"
-        if reaper.ImGui_BeginCombo(ctx,"Loops", firstLoopName) then
-          for i,lp in ipairs(loops) do
-            local isSel=(selectedLoopIndex==i)
-            if reaper.ImGui_Selectable(ctx, lp.name, isSel) then
-              selectedLoopIndex=i
+        -- Parcourir toutes les pistes
+        local num_tracks = reaper.CountTracks(0)
+        for i = 0, num_tracks - 1 do
+          local track = reaper.GetTrack(0, i)
+          local _, track_name = reaper.GetTrackName(track)
+          
+          -- Vérifier si la piste contient un plugin PoulpyLoop
+          local has_poulpyloop = false
+          local fx_count = reaper.TrackFX_GetCount(track)
+          for j = 0, fx_count - 1 do
+            local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+            if fx_name:find("PoulpyLoop") then
+              has_poulpyloop = true
+              break
             end
-            if isSel then reaper.ImGui_SetItemDefaultFocus(ctx) end
           end
-          reaper.ImGui_EndCombo(ctx)
+
+          if has_poulpyloop then
+            reaper.ImGui_TableNextRow(ctx)
+            
+            -- Nom de la piste
+            reaper.ImGui_TableNextColumn(ctx)
+            reaper.ImGui_Text(ctx, track_name)
+
+            -- Case à cocher pour le monitoring à l'arrêt
+            reaper.ImGui_TableNextColumn(ctx)
+            local monitoring_stop = reaper.gmem_read(GMEM_MONITORING_STOP_BASE + i) == 1
+            if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. i, monitoring_stop) then
+              reaper.gmem_write(GMEM_MONITORING_STOP_BASE + i, monitoring_stop and 0 or 1)
+            end
+            
+            if reaper.ImGui_IsItemHovered(ctx) then
+                reaper.ImGui_SetTooltip(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt.")
+            end
+          end
         end
 
-        if selectedLoopIndex and loops[selectedLoopIndex] then
-          local lp= loops[selectedLoopIndex]
-          reaper.ImGui_Separator(ctx)
-          reaper.ImGui_Text(ctx, "Nom: "..(lp.name or ""))
-          reaper.ImGui_Text(ctx, string.format("regionType=%d (begin=%.1f, end=%.1f)", 
-            lp.regionType or -1, lp.beginTime or 0, lp.endTime or 0))
-        end
-      end
-    end
+        reaper.ImGui_EndTable(ctx)
+
         reaper.ImGui_EndTabItem(ctx)
       end
 
-      -- Onglet "Tools"
+      -- Onglet "Tools" (avec contenu de "Importation ALK")
       if reaper.ImGui_BeginTabItem(ctx, "Tools") then
+        -- Partie 1: Outils de base
+        reaper.ImGui_Text(ctx, "Outils de base :")
+        reaper.ImGui_Separator(ctx)
+        
         reaper.ImGui_Text(ctx, "Entrée audio pour Looper :")
         drawRecInputCombo()
 
@@ -1935,7 +1921,107 @@ local function mainWindow()
         end
 
         reaper.ImGui_Separator(ctx)
+        
+        -- Partie 2: Importation ALK (ancien onglet)
+        reaper.ImGui_Text(ctx, "Importation ALK :")
+        reaper.ImGui_Separator(ctx)
+        
+        reaper.ImGui_Text(ctx, "Fichier ALK: ".. ((alkData and "(chargé)") or "aucun"))
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx,"Ouvrir .alk") then
+          local ret, file= reaper.GetUserFileNameForRead("", "Fichier ALK", "alk")
+          if ret then
+            local c, err= readFile(file)
+            if not c then
+              errorMessage= err
+            else
+              alkData, errorMessage= parseALK(c)
+              selectedTrackTypeIndex=0
+              selectedTrackIndex=nil
+              selectedLoopIndex=nil
+            end
+          end
+        end
 
+        if alkData and reaper.ImGui_Button(ctx,"Importer le projet ALK") then
+          importProject()
+        end
+
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx,"Préparer pour PoulpyLoopy") then
+          prepareForPoulpyLoopy()
+        end
+
+        if errorMessage and #errorMessage>0 then
+          reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF0000FF)
+          reaper.ImGui_Text(ctx,"Erreur: ".. errorMessage)
+          reaper.ImGui_PopStyleColor(ctx)
+        end
+
+        reaper.ImGui_Separator(ctx)
+
+        -- Affichage détaillé ALK
+        if alkData then
+          if reaper.ImGui_BeginCombo(ctx, "TrackType", alkData.trackTypes[selectedTrackTypeIndex].name) then
+            for i=0,4 do
+              local tt= alkData.trackTypes[i]
+              local isSel= (selectedTrackTypeIndex==i)
+              local lbl= tt.name.." ("..#tt.tracks..")"
+              if reaper.ImGui_Selectable(ctx,lbl,isSel) then
+                selectedTrackTypeIndex= i
+                selectedTrackIndex=nil
+                selectedLoopIndex=nil
+              end
+              if isSel then reaper.ImGui_SetItemDefaultFocus(ctx) end
+            end
+            reaper.ImGui_EndCombo(ctx)
+          end
+
+          local tracks= alkData.trackTypes[selectedTrackTypeIndex].tracks or {}
+          local trackLabel= (#tracks>0 and tracks[1].name) or "Aucune piste"
+          if reaper.ImGui_BeginCombo(ctx,"Tracks", trackLabel) then
+            for i,tr in ipairs(tracks) do
+              local isSel=(selectedTrackIndex==i)
+              if reaper.ImGui_Selectable(ctx, tr.name, isSel) then
+                selectedTrackIndex=i
+                selectedLoopIndex=nil
+              end
+              if isSel then reaper.ImGui_SetItemDefaultFocus(ctx) end
+            end
+            reaper.ImGui_EndCombo(ctx)
+          end
+
+          if selectedTrackIndex and tracks[selectedTrackIndex] then
+            local theTr= tracks[selectedTrackIndex]
+            local loops= theTr.loops or {}
+            local firstLoopName= (#loops>0 and loops[1].name) or "Aucune loop"
+            if reaper.ImGui_BeginCombo(ctx,"Loops", firstLoopName) then
+              for i,lp in ipairs(loops) do
+                local isSel=(selectedLoopIndex==i)
+                if reaper.ImGui_Selectable(ctx, lp.name, isSel) then
+                  selectedLoopIndex=i
+                end
+                if isSel then reaper.ImGui_SetItemDefaultFocus(ctx) end
+              end
+              reaper.ImGui_EndCombo(ctx)
+            end
+
+            if selectedLoopIndex and loops[selectedLoopIndex] then
+              local lp= loops[selectedLoopIndex]
+              reaper.ImGui_Separator(ctx)
+              reaper.ImGui_Text(ctx, "Nom: "..(lp.name or ""))
+              reaper.ImGui_Text(ctx, string.format("regionType=%d (begin=%.1f, end=%.1f)", 
+                lp.regionType or -1, lp.beginTime or 0, lp.endTime or 0))
+            end
+          end
+        end
+
+        reaper.ImGui_Separator(ctx)
+
+        -- Partie 3: Automation du clic (déjà présent dans Tools)
+        reaper.ImGui_Text(ctx, "Automation du clic :")
+        reaper.ImGui_Separator(ctx)
+        
         -- Menu déroulant pour les pistes de type Command
         if alkData then
             local commandTracks = alkData.trackTypes[3].tracks or {}
@@ -2128,59 +2214,6 @@ local function mainWindow()
         reaper.ImGui_Text(ctx, string.format("Nombre total d'instances actives : %d", total_instances))
         reaper.ImGui_Text(ctx, "Note : Les statistiques sont mises à jour en temps réel par chaque instance active de PoulpyLoop.")
         
-        reaper.ImGui_EndTabItem(ctx)
-      end
-
-      -- Onglet "Monitoring" pour gérer le monitoring à l'arrêt
-      if reaper.ImGui_BeginTabItem(ctx, "Monitoring") then
-        reaper.ImGui_Text(ctx, "Monitoring à l'arrêt des pistes PoulpyLoop :")
-        reaper.ImGui_Separator(ctx)
-
-        -- Tableau pour afficher les pistes avec PoulpyLoop
-        reaper.ImGui_BeginTable(ctx, "monitoring_table", 2, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
-        reaper.ImGui_TableSetupColumn(ctx, "Piste", reaper.ImGui_TableColumnFlags_WidthStretch())
-        reaper.ImGui_TableSetupColumn(ctx, "Monitoring à l'arrêt", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
-        reaper.ImGui_TableHeadersRow(ctx)
-
-        -- Parcourir toutes les pistes
-        local num_tracks = reaper.CountTracks(0)
-        for i = 0, num_tracks - 1 do
-          local track = reaper.GetTrack(0, i)
-          local _, track_name = reaper.GetTrackName(track)
-          
-          -- Vérifier si la piste contient un plugin PoulpyLoop
-          local has_poulpyloop = false
-          local fx_count = reaper.TrackFX_GetCount(track)
-          for j = 0, fx_count - 1 do
-            local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
-            if fx_name:find("PoulpyLoop") then
-              has_poulpyloop = true
-              break
-            end
-          end
-
-          if has_poulpyloop then
-            reaper.ImGui_TableNextRow(ctx)
-            
-            -- Nom de la piste
-            reaper.ImGui_TableNextColumn(ctx)
-            reaper.ImGui_Text(ctx, track_name)
-
-            -- Case à cocher pour le monitoring à l'arrêt
-            reaper.ImGui_TableNextColumn(ctx)
-            local monitoring_stop = reaper.gmem_read(GMEM_MONITORING_STOP_BASE + i) == 1
-            if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. i, monitoring_stop) then
-              reaper.gmem_write(GMEM_MONITORING_STOP_BASE + i, monitoring_stop and 0 or 1)
-            end
-          end
-        end
-
-        reaper.ImGui_EndTable(ctx)
-
-        -- Explication
-        reaper.ImGui_Separator(ctx)
-        reaper.ImGui_TextWrapped(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt, permettant d'entendre le signal brut et les effets qui suivent le plugin PoulpyLoop.")
-
         reaper.ImGui_EndTabItem(ctx)
       end
 
