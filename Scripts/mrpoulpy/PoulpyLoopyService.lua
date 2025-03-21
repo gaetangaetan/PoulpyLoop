@@ -3,15 +3,36 @@
 
 local reaper = reaper
 
--- Fonction pour afficher des messages dans la console REAPER
-local function debug_console(message)
-    reaper.ShowConsoleMsg("[PoulpyLoopyService] " .. message .. "\n")
+-- Variable pour contrôler l'affichage des messages dans la console
+local GMEM_AFFICHAGE_CONSOLE_DEBUG = 17100  -- Nouvelle adresse pour le contrôle de l'affichage console
+local DEBUG_DEV = false  -- Mode développement, mettre à true seulement pour déboguer le service
+
+-- Se connecter à gmem d'abord
+reaper.gmem_attach("PoulpyLoopy")
+
+-- Initialiser la variable d'affichage si nécessaire (avant tout usage)
+-- Si elle n'existe pas encore ou n'est pas définie correctement (0 ou 1), on l'initialise à 0 (désactivé par défaut)
+if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) ~= 0 and reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) ~= 1 then
+    reaper.gmem_write(GMEM_AFFICHAGE_CONSOLE_DEBUG, 0)
 end
 
-debug_console("Démarrage du service...")
+-- Fonction pour afficher des messages dans la console REAPER
+local function debug_console(message)
+    -- Vérifier si l'affichage console est activé (1) ou si on est en mode développement
+    if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1 or DEBUG_DEV then
+        reaper.ShowConsoleMsg("[PoulpyLoopyService] " .. message .. "\n")
+    end
+end
 
--- Se connecter à gmem
-reaper.gmem_attach("PoulpyLoopy")
+-- Fonction simplifiée pour les messages importants (force l'affichage si une condition est vérifiée)
+local function debug_important(message, force_condition)
+    if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1 or DEBUG_DEV or force_condition then
+        reaper.ShowConsoleMsg("[PoulpyLoopyService] " .. message .. "\n")
+    end
+end
+
+-- Messages initiaux - ne seront affichés que si l'option est activée
+debug_console("Démarrage du service...")
 debug_console("Connexion à gmem:PoulpyLoopy établie")
 
 -- Indices gmem pour les modes
@@ -79,13 +100,17 @@ end
 -- Vérifier si une instance du service est déjà en cours d'exécution
 local instance_running = reaper.GetExtState("PoulpyLoopyService", "running")
 if instance_running == "1" then
-  -- Une instance est déjà en cours d'exécution, on quitte
-  debug_console("Une instance est déjà en cours d'exécution, arrêt de cette instance")
-  write_message_to_gmem("PoulpyLoopyService est déjà actif")
+  -- Une instance est déjà en cours d'exécution, on quitte silencieusement
+  if DEBUG_DEV then
+    debug_console("Une instance est déjà en cours d'exécution, arrêt de cette instance")
+    write_message_to_gmem("PoulpyLoopyService est déjà actif")
+  end
   return
 end
 
-debug_console("Aucune instance en cours d'exécution trouvée, démarrage du service")
+if DEBUG_DEV then
+  debug_console("Aucune instance en cours d'exécution trouvée, démarrage du service")
+end
 
 -- Marquer le service comme en cours d'exécution
 reaper.SetExtState("PoulpyLoopyService", "running", "1", false)
@@ -93,7 +118,9 @@ debug_console("État du service marqué comme 'en cours d'exécution'")
 
 -- Fonction pour tester l'écriture et la lecture du message
 local function test_message_system()
-    debug_console("Test du système de messages...")
+    if DEBUG_DEV then
+        debug_console("Test du système de messages...")
+    end
     write_message_to_gmem("===== TEST DU SYSTÈME DE MESSAGES =====")
     
     -- Réinitialiser l'espace message
@@ -102,10 +129,16 @@ local function test_message_system()
     -- Écrire un message de test
     local test_message = "Test de communication à " .. os.date("%H:%M:%S")
     local written_length = write_message_to_gmem(test_message)
-    debug_console("Message de test écrit: " .. test_message .. " (" .. written_length .. " octets)")
+    
+    if DEBUG_DEV then
+        debug_console("Message de test écrit: " .. test_message .. " (" .. written_length .. " octets)")
+    end
     
     write_message_to_gmem("Message de test écrit avec succès.\n===== FIN DU TEST =====")
-    debug_console("Test du système de messages terminé")
+    
+    if DEBUG_DEV then
+        debug_console("Test du système de messages terminé")
+    end
 end
 
 -- Initialiser les valeurs dans gmem si elles ne sont pas déjà définies
@@ -321,7 +354,7 @@ local function exit()
     reaper.SetExtState("PoulpyLoopyService", "running", "0", false)
     -- Écrire un message final
     write_message_to_gmem("PoulpyLoopyService arrêté")
-    debug_console("Service arrêté")
+    debug_important("Service arrêté", false)
 end
 
 -- Enregistrer la fonction de nettoyage
@@ -338,7 +371,7 @@ local function main()
     -- Si l'état de lecture a changé ou si on force l'analyse
     if play_state ~= last_play_state or force_analyze then
         if force_analyze then
-            debug_console("ANALYSE FORCÉE DES OFFSETS DEMANDÉE")
+            debug_important("ANALYSE FORCÉE DES OFFSETS DEMANDÉE", force_analyze)
             write_message_to_gmem("=== ANALYSE FORCÉE DES OFFSETS ===")
         else
             debug_console("État de lecture changé: " .. (play_state == 1 and "LECTURE" or "ARRÊTÉ"))
@@ -358,7 +391,7 @@ local function main()
         -- Réinitialiser le flag de forçage APRÈS l'analyse
         if force_analyze then
             reaper.gmem_write(GMEM_FORCE_ANALYZE, 0)
-            debug_console("Flag d'analyse forcée réinitialisé")
+            debug_important("Flag d'analyse forcée réinitialisé", force_analyze)
             write_message_to_gmem("=== FIN DE L'ANALYSE FORCÉE ===")
         end
     end
@@ -368,5 +401,7 @@ local function main()
 end
 
 -- Démarrer la boucle principale
-debug_console("Démarrage de la boucle principale")
+if DEBUG_DEV then
+    debug_console("Démarrage de la boucle principale")
+end
 main() 

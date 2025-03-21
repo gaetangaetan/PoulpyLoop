@@ -38,6 +38,18 @@
 local reaper = reaper
 local ctx = reaper.ImGui_CreateContext("PoulpyLoopy")
 
+--------------------------------------------------------------------------------
+-- Contrôle de l'affichage des messages dans la console
+--------------------------------------------------------------------------------
+-- Même constante que dans PoulpyLoopyService.lua
+local GMEM_AFFICHAGE_CONSOLE_DEBUG = 17100
+
+-- Fonction pour afficher des messages dans la console uniquement si activé
+local function debug_console(message)
+    if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1 then
+        reaper.ShowConsoleMsg(message)
+    end
+end
 
 --------------------------------------------------------------------------------
 -- Vérification et démarrage du service
@@ -45,29 +57,29 @@ local ctx = reaper.ImGui_CreateContext("PoulpyLoopy")
 local service_running = reaper.GetExtState("PoulpyLoopyService", "running")
 if service_running ~= "1" then
   -- Le service n'est pas en cours d'exécution, on le démarre
-  reaper.ShowConsoleMsg("PoulpyLoopy: Tentative de démarrage de PoulpyLoopyService...\n")
+  debug_console("PoulpyLoopy: Tentative de démarrage de PoulpyLoopyService...\n")
   
   -- Lancer le script de service en tant que script séparé
   local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/PoulpyLoopyService.lua"
-  reaper.ShowConsoleMsg("Chemin du script: " .. script_path .. "\n")
+  debug_console("Chemin du script: " .. script_path .. "\n")
   
   -- Vérifier si ReaScriptAPI est disponible
   if reaper.APIExists("ReaScriptAPI_LoadScript") then
-    reaper.ShowConsoleMsg("Méthode de lancement: ReaScriptAPI_LoadScript\n")
+    debug_console("Méthode de lancement: ReaScriptAPI_LoadScript\n")
     local result = reaper.ReaScriptAPI_LoadScript(script_path, true) -- true = async (en arrière-plan)
-    reaper.ShowConsoleMsg("Résultat du lancement: " .. tostring(result) .. "\n")
+    debug_console("Résultat du lancement: " .. tostring(result) .. "\n")
   else
     -- Méthode alternative si ReaScriptAPI n'est pas disponible
-    reaper.ShowConsoleMsg("Méthode de lancement: AddRemoveReaScript\n")
+    debug_console("Méthode de lancement: AddRemoveReaScript\n")
     
     -- Obtenir le Command ID dynamiquement
     local cmd_id = reaper.AddRemoveReaScript(true, 0, script_path, true)
     if cmd_id > 0 then
-      reaper.ShowConsoleMsg("Command ID obtenu: " .. tostring(cmd_id) .. "\n")
+      debug_console("Command ID obtenu: " .. tostring(cmd_id) .. "\n")
       reaper.Main_OnCommand(cmd_id, 0)
     else
-      reaper.ShowConsoleMsg("ERREUR: Impossible d'obtenir le Command ID pour " .. script_path .. "\n")
-      reaper.ShowConsoleMsg("Vérifiez que le fichier existe et que SWS est installé.\n")
+      debug_console("ERREUR: Impossible d'obtenir le Command ID pour " .. script_path .. "\n")
+      debug_console("Vérifiez que le fichier existe et que SWS est installé.\n")
     end
   end
   
@@ -81,19 +93,19 @@ if service_running ~= "1" then
       local is_running = reaper.GetExtState("PoulpyLoopyService", "running")
       
       if is_running == "1" then
-        reaper.ShowConsoleMsg("PoulpyLoopyService démarré avec succès!\n")
+        debug_console("PoulpyLoopyService démarré avec succès!\n")
       elseif timeout > 0 then
         reaper.defer(check_service_started)
       else
-        reaper.ShowConsoleMsg("ERREUR: PoulpyLoopyService n'a pas démarré après 3 secondes.\n")
-        reaper.ShowConsoleMsg("Vérifiez que le fichier existe et que SWS/ReaScriptAPI est installé.\n")
+        debug_console("ERREUR: PoulpyLoopyService n'a pas démarré après 3 secondes.\n")
+        debug_console("Vérifiez que le fichier existe et que SWS/ReaScriptAPI est installé.\n")
       end
     end
     
     reaper.defer(check_service_started)
   end)
 else
-  reaper.ShowConsoleMsg("PoulpyLoopy: PoulpyLoopyService est déjà en cours d'exécution.\n")
+  debug_console("PoulpyLoopy: PoulpyLoopyService est déjà en cours d'exécution.\n")
 end
 
 -- Pour les opérations locales, on se connecte aussi à gmem
@@ -142,6 +154,9 @@ local GMEM_LOOP_LENGTH_BASE = 8451    -- gmem[8451] à gmem[8451+64*128-1] pour 
 -- Nouveaux indices pour la synchronisation MIDI
 local GMEM_FORCE_ANALYZE = 16000     -- gmem[16000] pour forcer l'analyse des offsets (1 = forcer)
 local GMEM_MIDI_SYNC_DATA_BASE = 16001 -- gmem[16001] à gmem[16001+64*3-1] pour les données de synchronisation MIDI (64 pistes max)
+
+-- Contrôle de l'affichage console du service
+local GMEM_AFFICHAGE_CONSOLE_DEBUG = 17100  -- gmem[17100] pour contrôler l'affichage des messages dans la console (0 = désactivé, 1 = activé)
 
 -- Espace pour les messages dans gmem
 local GMEM_MESSAGE_BASE = 17000      -- gmem[17000] à gmem[17000+9999] pour les messages (10000 caractères)
@@ -745,7 +760,7 @@ local function importAutomation()
     end
   end
   if not tempoTr then
-    reaper.ShowConsoleMsg("Aucune piste TEMPO trouvée dans l'ALK\n")
+    debug_console("Aucune piste TEMPO trouvée dans l'ALK\n")
     return
   end
   for _, lp in ipairs(tempoTr.loops or {}) do
@@ -1261,7 +1276,7 @@ local function prepareForPoulpyLoopy()
         createPoulpyLoopMIDI(take, item, loopName, "OVERDUB", usage, pitchSemis, itemStart, itemEnd, refNote, 3)
 
       elseif loopType=="UNUSED" then
-        reaper.ShowConsoleMsg("\nLoop "..loopName.." ignorée (type="..loopType..")")
+        debug_console("\nLoop "..loopName.." ignorée (type="..loopType..")")
       end
     end
   end
@@ -2342,9 +2357,18 @@ local function mainWindow()
         
         -- Boutons d'action
         reaper.ImGui_Separator(ctx)
+        
+        -- Checkbox pour activer/désactiver l'affichage dans la console
+        local console_debug = reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1
+        local clicked, new_console_debug = reaper.ImGui_Checkbox(ctx, "Afficher les messages dans la console", console_debug)
+        if clicked then
+            reaper.gmem_write(GMEM_AFFICHAGE_CONSOLE_DEBUG, new_console_debug and 1 or 0)
+        end
+        
+        reaper.ImGui_Separator(ctx)
         if reaper.ImGui_Button(ctx, "Forcer l'analyse des offsets") then
             reaper.gmem_write(GMEM_FORCE_ANALYZE, 1)
-            reaper.ShowConsoleMsg("Demande d'analyse forcée des offsets envoyée\n")
+            debug_console("Demande d'analyse forcée des offsets envoyée\n")
         end
         
         reaper.ImGui_SameLine(ctx)
