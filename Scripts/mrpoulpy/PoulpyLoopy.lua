@@ -1099,7 +1099,7 @@ local function GetRecordLoopsInFolder(take)
 end
 
 local function GetPreviousRecordLoopsInFolder(take)
-  local base_track = reaper.GetMediaItemTake_Track(take)
+    local base_track = reaper.GetMediaItemTake_Track(take)
   local curItem = reaper.GetMediaItemTake_Item(take)
   local curStart = reaper.GetMediaItemInfo_Value(curItem, "D_POSITION")
 
@@ -1120,12 +1120,12 @@ local function GetPreviousRecordLoopsInFolder(take)
             local nm = GetTakeMetadata(tkTake, "loop_name")
             if nm ~= "" then
               recordLoops[nm] = true
+                                end
+                            end
+                        end
+                    end
+                end
             end
-          end
-        end
-      end
-    end
-  end
   
   local result = {}
   for k, _ in pairs(recordLoops) do
@@ -1628,25 +1628,25 @@ local function GetPreviousRecordLoopsInFolder(take)
   
   -- Ne traiter que la piste actuelle, pas toutes les pistes du dossier
   local nb = reaper.CountTrackMediaItems(base_track)
-  for i=0, nb-1 do
+      for i=0, nb-1 do
     local it = reaper.GetTrackMediaItem(base_track, i)
     local st = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
     -- Ne considérer que les items qui sont en amont du clip sélectionné
     if st < curStart then
-      for tk=0, reaper.CountTakes(it)-1 do
+          for tk=0, reaper.CountTakes(it)-1 do
         local tkTake = reaper.GetTake(it, tk)
-        if tkTake then
+            if tkTake then
           local ty = GetTakeMetadata(tkTake, "loop_type") 
           if ty == "RECORD" then
             local nm = GetTakeMetadata(tkTake, "loop_name")
             if nm ~= "" then
               recordLoops[nm] = true
+                end
+              end
             end
           end
         end
       end
-    end
-  end
   
   local result = {}
   for k, _ in pairs(recordLoops) do
@@ -1905,11 +1905,15 @@ local function DrawLoopOptionsWindow()
                     local is_sel = (selected_loop_type_index == (i - 1))
                     if reaper.ImGui_Selectable(ctx, v, is_sel) then
                         selected_loop_type_index = i - 1
-          end
-          if is_sel then reaper.ImGui_SetItemDefaultFocus(ctx) end
-        end
-        reaper.ImGui_EndCombo(ctx)
-      end
+                        -- Forcer le mode Mono quand PLAY est sélectionné
+                        if v == "PLAY" then
+                            is_mono = true
+                        end
+                    end
+                    if is_sel then reaper.ImGui_SetItemDefaultFocus(ctx) end
+                end
+                reaper.ImGui_EndCombo(ctx)
+            end
 
             -- Options spécifiques selon le type de loop
             if loop_type == "RECORD" then
@@ -1961,7 +1965,7 @@ local function DrawLoopOptionsWindow()
                     if loop_type == "PLAY" then
                         sel_idx = #prev_loops
                         reference_loop = prev_loops[sel_idx]  -- Mettre à jour reference_loop avec la valeur par défaut
-                    end
+            end
                 end
                 
                 if reaper.ImGui_BeginCombo(ctx, "Loop de Référence", prev_loops[sel_idx] or "(Aucun)") then
@@ -2116,7 +2120,7 @@ local function mainWindow()
   reaper.ImGui_SetNextWindowPos(ctx, 100,50, reaper.ImGui_Cond_FirstUseEver())
   reaper.ImGui_SetNextWindowSize(ctx,700,500, reaper.ImGui_Cond_FirstUseEver())
 
-  local visible= reaper.ImGui_Begin(ctx, "PoulpyLoopy v" .. VERSION, true)
+  local visible, open = reaper.ImGui_Begin(ctx, "PoulpyLoopy v" .. VERSION, true)
   if visible then
     -- Création des onglets
     if reaper.ImGui_BeginTabBar(ctx, "MainTabs") then
@@ -2145,6 +2149,10 @@ local function mainWindow()
                     local is_sel = (selected_loop_type_index == (i - 1))
                     if reaper.ImGui_Selectable(ctx, v, is_sel) then
                         selected_loop_type_index = i - 1
+                        -- Forcer le mode Mono quand PLAY est sélectionné
+                        if v == "PLAY" then
+                            is_mono = true
+                        end
                     end
                     if is_sel then reaper.ImGui_SetItemDefaultFocus(ctx) end
                 end
@@ -2976,12 +2984,12 @@ local function mainWindow()
     end
 
     if reaper.ImGui_Button(ctx,"Fermer la fenêtre") then
-      visible=false
+      open = false
     end
   end
   reaper.ImGui_End(ctx)
 
-  return visible
+  return open
 end
 
 local function main()
