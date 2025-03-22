@@ -1099,41 +1099,43 @@ local function GetRecordLoopsInFolder(take)
 end
 
 local function GetPreviousRecordLoopsInFolder(take)
-    local base_track = reaper.GetMediaItemTake_Track(take)
-    local tracks = GetTracksInSameFolder(base_track)
-    local current_item = reaper.GetMediaItemTake_Item(take)
-    local current_start = reaper.GetMediaItemInfo_Value(current_item, "D_POSITION")
-    local loops = {}
-    
-    -- Utilisé pour éviter les doublons
-    local unique_loops = {}
-    
-    for _, track in ipairs(tracks) do
-        local count = reaper.CountTrackMediaItems(track)
-        for i = 0, count - 1 do
-            local item = reaper.GetTrackMediaItem(track, i)
-            if item then
-                local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-                if item_start < current_start then
-                    for j = 0, reaper.CountTakes(item) - 1 do
-                        local other_take = reaper.GetTake(item, j)
-                        if other_take then
-                            local loop_type = GetTakeMetadata(other_take, "loop_type")
-                            local loop_name = GetTakeMetadata(other_take, "loop_name")
-                            if loop_type == "RECORD" and not IsStringEmptyOrWhitespace(loop_name) then
-                                if not unique_loops[loop_name] then
-                                    table.insert(loops, loop_name)
-                                    unique_loops[loop_name] = true
-                                end
-                            end
-                        end
-                    end
-                end
+  local base_track = reaper.GetMediaItemTake_Track(take)
+  local curItem = reaper.GetMediaItemTake_Item(take)
+  local curStart = reaper.GetMediaItemInfo_Value(curItem, "D_POSITION")
+
+  local recordLoops = {}
+  
+  -- Ne traiter que la piste actuelle, pas toutes les pistes du dossier
+  local nb = reaper.CountTrackMediaItems(base_track)
+  for i=0, nb-1 do
+    local it = reaper.GetTrackMediaItem(base_track, i)
+    local st = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+    -- Ne considérer que les items qui sont en amont du clip sélectionné
+    if st < curStart then
+      for tk=0, reaper.CountTakes(it)-1 do
+        local tkTake = reaper.GetTake(it, tk)
+        if tkTake then
+          local ty = GetTakeMetadata(tkTake, "loop_type") 
+          if ty == "RECORD" then
+            local nm = GetTakeMetadata(tkTake, "loop_name")
+            if nm ~= "" then
+              recordLoops[nm] = true
             end
+          end
         end
+      end
     end
-    table.sort(loops)
-    return loops
+  end
+  
+  local result = {}
+  for k, _ in pairs(recordLoops) do
+    table.insert(result, k)
+  end
+  
+  -- Trier par ordre alphabétique pour faciliter la sélection
+  table.sort(result)
+  
+  return result
 end
 
 local function UpdateDependentLoops(record_take, old_name, new_name)
@@ -1618,42 +1620,42 @@ end
 
 -- Liste les loops RECORD existant avant itemStart
 local function GetPreviousRecordLoopsInFolder(take)
-  local base_track= reaper.GetMediaItemTake_Track(take)
-  local folderIndex= GetFolderIndex(base_track)
-  local curItem= reaper.GetMediaItemTake_Item(take)
-  local curStart= reaper.GetMediaItemInfo_Value(curItem,"D_POSITION")
+  local base_track = reaper.GetMediaItemTake_Track(take)
+  local curItem = reaper.GetMediaItemTake_Item(take)
+  local curStart = reaper.GetMediaItemInfo_Value(curItem, "D_POSITION")
 
-  local recordLoops= {}
-  local trackCount= reaper.CountTracks(0)
-  for t=0, trackCount-1 do
-    local tr= reaper.GetTrack(0,t)
-    if GetFolderIndex(tr)== folderIndex then
-      local nb= reaper.CountTrackMediaItems(tr)
-      for i=0, nb-1 do
-        local it= reaper.GetTrackMediaItem(tr,i)
-        local st= reaper.GetMediaItemInfo_Value(it,"D_POSITION")
-        if st< curStart then
-          for tk=0, reaper.CountTakes(it)-1 do
-            local tkTake= reaper.GetTake(it,tk)
-            if tkTake then
-              local ty= GetTakeMetadata(tkTake,"loop_type") 
-              if ty=="RECORD" then
-                local nm= GetTakeMetadata(tkTake,"loop_name")
-                if nm~="" then
-                  recordLoops[nm]= true
-                end
-              end
+  local recordLoops = {}
+  
+  -- Ne traiter que la piste actuelle, pas toutes les pistes du dossier
+  local nb = reaper.CountTrackMediaItems(base_track)
+  for i=0, nb-1 do
+    local it = reaper.GetTrackMediaItem(base_track, i)
+    local st = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
+    -- Ne considérer que les items qui sont en amont du clip sélectionné
+    if st < curStart then
+      for tk=0, reaper.CountTakes(it)-1 do
+        local tkTake = reaper.GetTake(it, tk)
+        if tkTake then
+          local ty = GetTakeMetadata(tkTake, "loop_type") 
+          if ty == "RECORD" then
+            local nm = GetTakeMetadata(tkTake, "loop_name")
+            if nm ~= "" then
+              recordLoops[nm] = true
             end
           end
         end
       end
     end
   end
-  local result={}
-  for nm,_ in pairs(recordLoops) do
-    table.insert(result, nm)
+  
+  local result = {}
+  for k, _ in pairs(recordLoops) do
+    table.insert(result, k)
   end
+  
+  -- Trier par ordre alphabétique pour faciliter la sélection
   table.sort(result)
+  
   return result
 end
 
