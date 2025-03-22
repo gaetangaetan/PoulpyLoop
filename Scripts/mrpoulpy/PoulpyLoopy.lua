@@ -446,7 +446,27 @@ local function ProcessMIDINotes()
 
       elseif loop_type == "PLAY" then
           local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-          local refNote = recordLoopPitches[folder_id][reference_loop] or 0
+          -- Extraire le nom sans préfixe pour la recherche
+          local ref_name = reference_loop:match("%d%d%s+(.*)")
+          local refNote = 0
+          
+          -- Chercher d'abord avec le nom complet
+          if recordLoopPitches[folder_id][reference_loop] then
+              refNote = recordLoopPitches[folder_id][reference_loop]
+          -- Puis chercher avec le nom sans préfixe
+          elseif ref_name and recordLoopPitches[folder_id][ref_name] then
+              refNote = recordLoopPitches[folder_id][ref_name]
+          -- Enfin, chercher dans toutes les entrées pour une correspondance sans préfixe
+          else
+              for name, pitch in pairs(recordLoopPitches[folder_id]) do
+                  local name_without_prefix = name:match("%d%d%s+(.*)")
+                  if name_without_prefix and name_without_prefix == ref_name then
+                      refNote = pitch
+                      break
+                  end
+              end
+          end
+          
           reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 2, false)
 
       elseif loop_type == "OVERDUB" then
@@ -1267,7 +1287,27 @@ local function prepareForPoulpyLoopy()
 
       elseif loopType=="PLAY" then
         local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-        local refNote = recordLoopNotes[fIdx][reference_loop] or 0
+        -- Extraire le nom sans préfixe pour la recherche
+        local ref_name = reference_loop:match("%d%d%s+(.*)")
+        local refNote = 0
+        
+        -- Chercher d'abord avec le nom complet
+        if recordLoopPitches[folder_id][reference_loop] then
+            refNote = recordLoopPitches[folder_id][reference_loop]
+        -- Puis chercher avec le nom sans préfixe
+        elseif ref_name and recordLoopPitches[folder_id][ref_name] then
+            refNote = recordLoopPitches[folder_id][ref_name]
+        -- Enfin, chercher dans toutes les entrées pour une correspondance sans préfixe
+        else
+            for name, pitch in pairs(recordLoopPitches[folder_id]) do
+                local name_without_prefix = name:match("%d%d%s+(.*)")
+                if name_without_prefix and name_without_prefix == ref_name then
+                    refNote = pitch
+                    break
+                end
+            end
+        end
+        
         createPoulpyLoopMIDI(take, item, loopName, "PLAY", usage, pitchSemis, itemStart, itemEnd, refNote, 2)
 
       elseif loopType=="OVERDUB" then
@@ -1406,6 +1446,7 @@ local function DrawLoopOptionsWindow()
                     -- Pour le type PLAY, sélectionner le dernier élément par défaut
                     if loop_type == "PLAY" then
                         sel_idx = #prev_loops
+                        reference_loop = prev_loops[sel_idx]  -- Mettre à jour reference_loop avec la valeur par défaut
                     end
                 end
                 
@@ -1645,6 +1686,7 @@ local function mainWindow()
                     -- Pour le type PLAY, sélectionner le dernier élément par défaut
                     if loop_type == "PLAY" then
                         sel_idx = #prev_loops
+                        reference_loop = prev_loops[sel_idx]  -- Mettre à jour reference_loop avec la valeur par défaut
                     end
                 end
                 
