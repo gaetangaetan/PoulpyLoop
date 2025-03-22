@@ -380,8 +380,8 @@ end
 
 
 local function ProcessMIDINotes()
-  local noteCounters = {}         -- par dossier (clé = folder_id)
-  local recordLoopPitches = {}      -- par dossier: mapping { loop_name -> pitch }
+  local noteCounters = {}         -- par piste (clé = track_id)
+  local recordLoopPitches = {}    -- par piste: mapping { loop_name -> pitch }
   local allTakes = {}
 
   local num_tracks = reaper.CountTracks(0)
@@ -404,14 +404,13 @@ local function ProcessMIDINotes()
   end
 
   table.sort(allTakes, function(a, b)
-      local trackA_parent = reaper.GetParentTrack(a.track)
-      local trackB_parent = reaper.GetParentTrack(b.track)
-      local folderA = trackA_parent and reaper.GetMediaTrackInfo_Value(trackA_parent, "IP_TRACKNUMBER") or reaper.GetMediaTrackInfo_Value(a.track, "IP_TRACKNUMBER")
-      local folderB = trackB_parent and reaper.GetMediaTrackInfo_Value(trackB_parent, "IP_TRACKNUMBER") or reaper.GetMediaTrackInfo_Value(b.track, "IP_TRACKNUMBER")
-      if folderA == folderB then
+      -- Tri par piste, puis par position de début
+      local trackA_id = reaper.GetMediaTrackInfo_Value(a.track, "IP_TRACKNUMBER")
+      local trackB_id = reaper.GetMediaTrackInfo_Value(b.track, "IP_TRACKNUMBER")
+      if trackA_id == trackB_id then
           return a.start_time < b.start_time
       else
-          return folderA < folderB
+          return trackA_id < trackB_id
       end
   end)
 
@@ -420,12 +419,11 @@ local function ProcessMIDINotes()
       local item = entry.item
       local loop_type = entry.loop_type
       local track = entry.track
-      local parent = reaper.GetParentTrack(track)
-      local folder_id = parent and reaper.GetMediaTrackInfo_Value(parent, "IP_TRACKNUMBER") or reaper.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")
+      local track_id = reaper.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")
       
-      if not noteCounters[folder_id] then
-          noteCounters[folder_id] = 1  -- Commence à 1 (C#-1)
-          recordLoopPitches[folder_id] = {}
+      if not noteCounters[track_id] then
+          noteCounters[track_id] = 1  -- Commence à 1 (C#-1)
+          recordLoopPitches[track_id] = {}
       end
 
       if loop_type == "UNUSED" then goto continue end
@@ -438,10 +436,10 @@ local function ProcessMIDINotes()
       local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
 
       if loop_type == "RECORD" then
-          local pitch = noteCounters[folder_id]
-          noteCounters[folder_id] = noteCounters[folder_id] + 1
+          local pitch = noteCounters[track_id]
+          noteCounters[track_id] = noteCounters[track_id] + 1
           local loop_name = GetTakeMetadata(take, "loop_name") or ""
-          recordLoopPitches[folder_id][loop_name] = pitch
+          recordLoopPitches[track_id][loop_name] = pitch
           reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 1, false)
 
       elseif loop_type == "PLAY" then
@@ -451,14 +449,14 @@ local function ProcessMIDINotes()
           local refNote = 0
           
           -- Chercher d'abord avec le nom complet
-          if recordLoopPitches[folder_id][reference_loop] then
-              refNote = recordLoopPitches[folder_id][reference_loop]
+          if recordLoopPitches[track_id][reference_loop] then
+              refNote = recordLoopPitches[track_id][reference_loop]
           -- Puis chercher avec le nom sans préfixe
-          elseif ref_name and recordLoopPitches[folder_id][ref_name] then
-              refNote = recordLoopPitches[folder_id][ref_name]
+          elseif ref_name and recordLoopPitches[track_id][ref_name] then
+              refNote = recordLoopPitches[track_id][ref_name]
           -- Enfin, chercher dans toutes les entrées pour une correspondance sans préfixe
           else
-              for name, pitch in pairs(recordLoopPitches[folder_id]) do
+              for name, pitch in pairs(recordLoopPitches[track_id]) do
                   local name_without_prefix = name:match("%d%d%s+(.*)")
                   if name_without_prefix and name_without_prefix == ref_name then
                       refNote = pitch
@@ -471,12 +469,526 @@ local function ProcessMIDINotes()
 
       elseif loop_type == "OVERDUB" then
           local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-          local refNote = recordLoopPitches[folder_id][reference_loop] or 0
+          -- Même logique que pour PLAY
+          local ref_name = reference_loop:match("%d%d%s+(.*)")
+          local refNote = 0
+          
+          if recordLoopPitches[track_id][reference_loop] then
+              refNote = recordLoopPitches[track_id][reference_loop]
+          elseif ref_name and recordLoopPitches[track_id][ref_name] then
+              refNote = recordLoopPitches[track_id][ref_name]
+          else
+              for name, pitch in pairs(recordLoopPitches[track_id]) do
+                  local name_without_prefix = name:match("%d%d%s+(.*)")
+                  if name_without_prefix and name_without_prefix == ref_name then
+                      refNote = pitch
+                      break
+                  end
+              end
+          end
+          
           reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 3, false)
 
       elseif loop_type == "MONITOR" then
-          local pitch = noteCounters[folder_id]
-          noteCounters[folder_id] = noteCounters[folder_id] + 1
+          local pitch = noteCounters[track_id]
+          noteCounters[track_id] = noteCounters[track_id] + 1
+          reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 4, false)
+      end
+
+      -- Insertion des MIDI CC pour représenter les paramètres de la loop
+      if loop_type ~= "UNUSED" then
+          local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
+          local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
+          local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
+          local cc08 = (is_mono_str == "true") and 0 or 1
+          local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
+          local cc10 = math.floor(64 + pan_val * 63 + 0.5)
+          local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
+          local cc09 = math.floor(64 + pitch_val + 0.5)
+          reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
+          reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
+          reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
+          reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
+          local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
+          reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
+      end
+
+      reaper.MIDI_Sort(take)
+      ::continue::
+  end
+  
+  -- Dernière étape : déplier les loops PLAY/OVERDUB qui sont plus longues que leur référence
+  local loopsToUnfold = {}
+  local referenceLoopLengths = {}
+  
+  -- 1. Collecte des informations sur toutes les loops RECORD pour référence
+  for t = 0, reaper.CountTracks(0) - 1 do
+    local track = reaper.GetTrack(0, t)
+    for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+      local item = reaper.GetTrackMediaItem(track, i)
+      if item then
+        for j = 0, reaper.CountTakes(item) - 1 do
+          local take = reaper.GetTake(item, j)
+          if take and reaper.TakeIsMIDI(take) then
+            local loop_type = GetTakeMetadata(take, "loop_type")
+            local loop_name = GetTakeMetadata(take, "loop_name") or ""
+            if loop_type == "RECORD" and loop_name ~= "" then
+              local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+              referenceLoopLengths[loop_name] = item_length
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- 2. Identifier les loops PLAY/OVERDUB qui sont plus longues que leur référence
+  for t = 0, reaper.CountTracks(0) - 1 do
+    local track = reaper.GetTrack(0, t)
+    for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+      local item = reaper.GetTrackMediaItem(track, i)
+      if item then
+        for j = 0, reaper.CountTakes(item) - 1 do
+          local take = reaper.GetTake(item, j)
+          if take and reaper.TakeIsMIDI(take) then
+            local loop_type = GetTakeMetadata(take, "loop_type")
+            if loop_type == "PLAY" or loop_type == "OVERDUB" then
+              local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
+              if reference_loop ~= "" and referenceLoopLengths[reference_loop] then
+                local play_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                local ref_length = referenceLoopLengths[reference_loop]
+                
+                -- Si la loop PLAY est plus longue que sa référence (sans aucune tolérance)
+                if play_length > ref_length then
+                  table.insert(loopsToUnfold, {
+                    item = item,
+                    take = take,
+                    track = track,
+                    ref_length = ref_length,
+                    play_length = play_length,
+                    play_position = reaper.GetMediaItemInfo_Value(item, "D_POSITION"),
+                    loop_type = loop_type,
+                    reference_loop = reference_loop
+                  })
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  -- 3. Déplier les loops identifiées
+  reaper.PreventUIRefresh(1)
+  reaper.Undo_BeginBlock()
+  
+  local createdItems = {} -- Garder la trace des items créés pour éviter la boucle infinie
+  
+  -- ID de commande pour l'action "Duplicate items"
+  local DUPLICATE_ITEMS_COMMAND_ID = 41295
+  
+  for _, loop in ipairs(loopsToUnfold) do
+    local ratio = loop.play_length / loop.ref_length
+    local full_copies = math.floor(ratio)
+    local partial_length = loop.play_length - (full_copies * loop.ref_length)
+    local current_position = loop.play_position
+    
+    -- Réduire la taille de la loop originale
+    reaper.SetMediaItemInfo_Value(loop.item, "D_LENGTH", loop.ref_length)
+    
+    -- Pour chaque copie complète (sauf la première qui est déjà l'item original)
+    for i = 1, full_copies - 1 do
+      current_position = current_position + loop.ref_length
+      
+      -- Méthode alternative pour dupliquer l'item en utilisant l'action de REAPER
+      local new_item = nil
+      
+      -- Sauvegarder la sélection actuelle
+      local old_sel_items = {}
+      for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
+        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+      end
+      
+      -- Désélectionner tous les items
+      for _, item in ipairs(old_sel_items) do
+        reaper.SetMediaItemSelected(item, false)
+      end
+      
+      -- Sélectionner l'item à dupliquer
+      reaper.SetMediaItemSelected(loop.item, true)
+      
+      -- Dupliquer en utilisant la commande native de REAPER
+      reaper.Main_OnCommand(DUPLICATE_ITEMS_COMMAND_ID, 0)
+      
+      -- Récupérer l'item dupliqué (c'est maintenant le seul item sélectionné)
+      if reaper.CountSelectedMediaItems(0) > 0 then
+        new_item = reaper.GetSelectedMediaItem(0, 0)
+        table.insert(createdItems, new_item)
+        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
+        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", loop.ref_length)
+      else
+        -- Fallback si la duplication échoue
+        new_item = reaper.AddMediaItemToTrack(loop.track)
+        local new_take = reaper.AddTakeToMediaItem(new_item)
+        -- Copier les métadonnées
+        SetTakeMetadata(new_take, "loop_type", loop.loop_type)
+        SetTakeMetadata(new_take, "reference_loop", loop.reference_loop)
+        SetTakeMetadata(new_take, "pan", GetTakeMetadata(loop.take, "pan") or "0")
+        SetTakeMetadata(new_take, "volume_db", GetTakeMetadata(loop.take, "volume_db") or "0")
+        SetTakeMetadata(new_take, "pitch", GetTakeMetadata(loop.take, "pitch") or "0")
+        SetTakeMetadata(new_take, "monitoring", GetTakeMetadata(loop.take, "monitoring") or "0")
+        SetTakeMetadata(new_take, "is_mono", GetTakeMetadata(loop.take, "is_mono") or "false")
+        
+        -- Couleur personnalisée
+        local color = loop.loop_type == "PLAY" and colorPlay or colorOverdub
+        reaper.SetMediaItemTakeInfo_Value(new_take, "I_CUSTOMCOLOR", color)
+        
+        -- Nom de la loop
+        reaper.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", loop.reference_loop, true)
+        
+        table.insert(createdItems, new_item)
+        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
+        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", loop.ref_length)
+      end
+      
+      -- Restaurer la sélection originale
+      reaper.SetMediaItemSelected(new_item, false)
+      for _, item in ipairs(old_sel_items) do
+        reaper.SetMediaItemSelected(item, true)
+      end
+    end
+    
+    -- Ajouter la dernière portion partielle si nécessaire
+    if partial_length > 0 then
+      current_position = current_position + loop.ref_length
+      
+      -- Même méthode pour la partie partielle
+      local new_item = nil
+      
+      -- Sauvegarder la sélection actuelle
+      local old_sel_items = {}
+      for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
+        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+      end
+      
+      -- Désélectionner tous les items
+      for _, item in ipairs(old_sel_items) do
+        reaper.SetMediaItemSelected(item, false)
+      end
+      
+      -- Sélectionner l'item à dupliquer
+      reaper.SetMediaItemSelected(loop.item, true)
+      
+      -- Dupliquer en utilisant la commande native de REAPER
+      reaper.Main_OnCommand(DUPLICATE_ITEMS_COMMAND_ID, 0)
+      
+      -- Récupérer l'item dupliqué
+      if reaper.CountSelectedMediaItems(0) > 0 then
+        new_item = reaper.GetSelectedMediaItem(0, 0)
+        table.insert(createdItems, new_item)
+        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
+        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", partial_length)
+      else
+        -- Fallback si la duplication échoue
+        new_item = reaper.AddMediaItemToTrack(loop.track)
+        local new_take = reaper.AddTakeToMediaItem(new_item)
+        -- Copier les métadonnées
+        SetTakeMetadata(new_take, "loop_type", loop.loop_type)
+        SetTakeMetadata(new_take, "reference_loop", loop.reference_loop)
+        SetTakeMetadata(new_take, "pan", GetTakeMetadata(loop.take, "pan") or "0")
+        SetTakeMetadata(new_take, "volume_db", GetTakeMetadata(loop.take, "volume_db") or "0")
+        SetTakeMetadata(new_take, "pitch", GetTakeMetadata(loop.take, "pitch") or "0")
+        SetTakeMetadata(new_take, "monitoring", GetTakeMetadata(loop.take, "monitoring") or "0")
+        SetTakeMetadata(new_take, "is_mono", GetTakeMetadata(loop.take, "is_mono") or "false")
+        
+        -- Couleur personnalisée
+        local color = loop.loop_type == "PLAY" and colorPlay or colorOverdub
+        reaper.SetMediaItemTakeInfo_Value(new_take, "I_CUSTOMCOLOR", color)
+        
+        -- Nom de la loop
+        reaper.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", loop.reference_loop, true)
+        
+        table.insert(createdItems, new_item)
+        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
+        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", partial_length)
+      end
+      
+      -- Restaurer la sélection originale
+      reaper.SetMediaItemSelected(new_item, false)
+      for _, item in ipairs(old_sel_items) do
+        reaper.SetMediaItemSelected(item, true)
+      end
+    end
+  end
+  
+  -- Si des loops ont été dépliées, appliquer MIDI_SetAllEvts uniquement aux items créés
+  if #loopsToUnfold > 0 then
+    -- Traiter d'abord les items originaux qui ont été redimensionnés
+    for _, loop in ipairs(loopsToUnfold) do
+      local take = loop.take
+      if take and reaper.ValidatePtr2(0, take, "MediaItem_Take*") then
+        local item = reaper.GetMediaItemTake_Item(take)
+        local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+        local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        local item_end = item_start + item_length
+        local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
+        local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
+        
+        -- Vider les événements MIDI existants
+        reaper.MIDI_SetAllEvts(take, "")
+        
+        -- Trouver la note à utiliser
+        local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
+        local velocity = (loop.loop_type == "PLAY") and 2 or 3
+        local refNote = 0
+        
+        -- Récupérer le pitch correct à partir des recordLoopPitches
+        for t = 0, reaper.CountTracks(0) - 1 do
+          local track = reaper.GetTrack(0, t)
+          for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+            local checkItem = reaper.GetTrackMediaItem(track, i)
+            local checkTake = reaper.GetActiveTake(checkItem)
+            if checkTake and reaper.TakeIsMIDI(checkTake) then
+              local check_loop_type = GetTakeMetadata(checkTake, "loop_type")
+              local check_loop_name = GetTakeMetadata(checkTake, "loop_name") or ""
+              if check_loop_type == "RECORD" and check_loop_name == reference_loop then
+                -- On a trouvé la loop de référence, extraire sa note
+                local ok, midi = reaper.MIDI_GetAllEvts(checkTake, "")
+                if ok and midi ~= "" then
+                  local stringPos = 1
+                  while stringPos < #midi do
+                    local offset, flags, msg, nextPos = string.unpack("i4Bs4", midi, stringPos)
+                    -- Si c'est une note on (0x90)
+                    if #msg >= 3 and (msg:byte(1) & 0xF0) == 0x90 and msg:byte(3) > 0 then
+                      refNote = msg:byte(2) -- La hauteur de la note (pitch)
+                      break
+                    end
+                    stringPos = nextPos
+                  end
+                end
+                break
+              end
+            end
+          end
+          if refNote > 0 then break end
+        end
+        
+        -- Insérer la note avec le pitch correct
+        reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, velocity, false)
+        
+        -- Ajouter les CCs
+        local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
+        local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
+        local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
+        local cc08 = (is_mono_str == "true") and 0 or 1
+        local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
+        local cc10 = math.floor(64 + pan_val * 63 + 0.5)
+        local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
+        local cc09 = math.floor(64 + pitch_val + 0.5)
+        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
+        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
+        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
+        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
+        local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
+        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
+        
+        reaper.MIDI_Sort(take)
+      end
+    end
+    
+    -- Puis traiter les nouveaux items créés
+    for _, item in ipairs(createdItems) do
+      if reaper.ValidatePtr2(0, item, "MediaItem*") then
+        for j = 0, reaper.CountTakes(item) - 1 do
+          local take = reaper.GetTake(item, j)
+          if take and reaper.TakeIsMIDI(take) then
+            local loop_type = GetTakeMetadata(take, "loop_type")
+            if loop_type == "PLAY" or loop_type == "OVERDUB" then
+              local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
+              local velocity = (loop_type == "PLAY") and 2 or 3
+              local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+              local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+              local item_end = item_start + item_length
+              local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
+              local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
+              
+              -- Trouver la note à utiliser (même logique que pour les items originaux)
+              local refNote = 0
+              for t = 0, reaper.CountTracks(0) - 1 do
+                local track = reaper.GetTrack(0, t)
+                for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+                  local checkItem = reaper.GetTrackMediaItem(track, i)
+                  local checkTake = reaper.GetActiveTake(checkItem)
+                  if checkTake and reaper.TakeIsMIDI(checkTake) then
+                    local check_loop_type = GetTakeMetadata(checkTake, "loop_type")
+                    local check_loop_name = GetTakeMetadata(checkTake, "loop_name") or ""
+                    if check_loop_type == "RECORD" and check_loop_name == reference_loop then
+                      local ok, midi = reaper.MIDI_GetAllEvts(checkTake, "")
+                      if ok and midi ~= "" then
+                        local stringPos = 1
+                        while stringPos < #midi do
+                          local offset, flags, msg, nextPos = string.unpack("i4Bs4", midi, stringPos)
+                          if #msg >= 3 and (msg:byte(1) & 0xF0) == 0x90 and msg:byte(3) > 0 then
+                            refNote = msg:byte(2)
+                            break
+                          end
+                          stringPos = nextPos
+                        end
+                      end
+                      break
+                    end
+                  end
+                end
+                if refNote > 0 then break end
+              end
+              
+              -- Insérer la note
+              reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, velocity, false)
+              
+              -- Ajouter les CCs
+              local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
+              local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
+              local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
+              local cc08 = (is_mono_str == "true") and 0 or 1
+              local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
+              local cc10 = math.floor(64 + pan_val * 63 + 0.5)
+              local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
+              local cc09 = math.floor(64 + pitch_val + 0.5)
+              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
+              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
+              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
+              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
+              local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
+              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
+              
+              reaper.MIDI_Sort(take)
+            end
+          end
+        end
+      end
+    end
+  end
+  
+  reaper.Undo_EndBlock("Déplier les loops PLAY/OVERDUB", -1)
+  reaper.PreventUIRefresh(-1)
+  reaper.UpdateArrange()
+end
+
+-- Version de ProcessMIDINotes sans dépliement (pour éviter la récursion infinie)
+local function _ProcessMIDINotesWithoutUnfolding()
+  local noteCounters = {}         -- par piste (clé = track_id)
+  local recordLoopPitches = {}    -- par piste: mapping { loop_name -> pitch }
+  local allTakes = {}
+
+  local num_tracks = reaper.CountTracks(0)
+  for t = 0, num_tracks - 1 do
+      local track = reaper.GetTrack(0, t)
+      for i = 0, reaper.CountTrackMediaItems(track) - 1 do
+          local item = reaper.GetTrackMediaItem(track, i)
+          if item then
+              for j = 0, reaper.CountTakes(item) - 1 do
+                  local take = reaper.GetTake(item, j)
+                  if take and reaper.TakeIsMIDI(take) then
+                      local loop_type = GetTakeMetadata(take, "loop_type")
+                      if loop_type then
+                          table.insert(allTakes, { take = take, item = item, start_time = reaper.GetMediaItemInfo_Value(item, "D_POSITION"), loop_type = loop_type, track = track })
+                      end
+                  end
+              end
+          end
+      end
+  end
+
+  table.sort(allTakes, function(a, b)
+      -- Tri par piste, puis par position de début
+      local trackA_id = reaper.GetMediaTrackInfo_Value(a.track, "IP_TRACKNUMBER")
+      local trackB_id = reaper.GetMediaTrackInfo_Value(b.track, "IP_TRACKNUMBER")
+      if trackA_id == trackB_id then
+          return a.start_time < b.start_time
+      else
+          return trackA_id < trackB_id
+      end
+  end)
+
+  for _, entry in ipairs(allTakes) do
+      local take = entry.take
+      local item = entry.item
+      local loop_type = entry.loop_type
+      local track = entry.track
+      local track_id = reaper.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")
+      
+      if not noteCounters[track_id] then
+          noteCounters[track_id] = 1  -- Commence à 1 (C#-1)
+          recordLoopPitches[track_id] = {}
+      end
+
+      if loop_type == "UNUSED" then goto continue end
+
+      reaper.MIDI_SetAllEvts(take, "")
+      local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+      local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+      local item_end = item_start + item_length
+      local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
+      local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
+
+      if loop_type == "RECORD" then
+          local pitch = noteCounters[track_id]
+          noteCounters[track_id] = noteCounters[track_id] + 1
+          local loop_name = GetTakeMetadata(take, "loop_name") or ""
+          recordLoopPitches[track_id][loop_name] = pitch
+          reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 1, false)
+
+      elseif loop_type == "PLAY" then
+          local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
+          -- Extraire le nom sans préfixe pour la recherche
+          local ref_name = reference_loop:match("%d%d%s+(.*)")
+          local refNote = 0
+          
+          -- Chercher d'abord avec le nom complet
+          if recordLoopPitches[track_id][reference_loop] then
+              refNote = recordLoopPitches[track_id][reference_loop]
+          -- Puis chercher avec le nom sans préfixe
+          elseif ref_name and recordLoopPitches[track_id][ref_name] then
+              refNote = recordLoopPitches[track_id][ref_name]
+          -- Enfin, chercher dans toutes les entrées pour une correspondance sans préfixe
+          else
+              for name, pitch in pairs(recordLoopPitches[track_id]) do
+                  local name_without_prefix = name:match("%d%d%s+(.*)")
+                  if name_without_prefix and name_without_prefix == ref_name then
+                      refNote = pitch
+                      break
+                  end
+              end
+          end
+          
+          reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 2, false)
+
+      elseif loop_type == "OVERDUB" then
+          local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
+          -- Même logique que pour PLAY
+          local ref_name = reference_loop:match("%d%d%s+(.*)")
+          local refNote = 0
+          
+          if recordLoopPitches[track_id][reference_loop] then
+              refNote = recordLoopPitches[track_id][reference_loop]
+          elseif ref_name and recordLoopPitches[track_id][ref_name] then
+              refNote = recordLoopPitches[track_id][ref_name]
+          else
+              for name, pitch in pairs(recordLoopPitches[track_id]) do
+                  local name_without_prefix = name:match("%d%d%s+(.*)")
+                  if name_without_prefix and name_without_prefix == ref_name then
+                      refNote = pitch
+                      break
+                  end
+              end
+          end
+          
+          reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 3, false)
+
+      elseif loop_type == "MONITOR" then
+          local pitch = noteCounters[track_id]
+          noteCounters[track_id] = noteCounters[track_id] + 1
           reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 4, false)
       end
 
@@ -1440,8 +1952,8 @@ local function DrawLoopOptionsWindow()
                         if ref_without_prefix and name:trim():lower() == ref_without_prefix then
                             sel_idx = i
                             break
-                        end
-                    end
+              end
+            end
                 else
                     -- Pour le type PLAY, sélectionner le dernier élément par défaut
                     if loop_type == "PLAY" then
@@ -1458,9 +1970,9 @@ local function DrawLoopOptionsWindow()
                             reference_loop = (name == "(Aucun)") and "" or name
                         end
                         if is_sel then reaper.ImGui_SetItemDefaultFocus(ctx) end
-                    end
-                    reaper.ImGui_EndCombo(ctx)
-                end
+          end
+          reaper.ImGui_EndCombo(ctx)
+        end
 
                 if loop_type == "OVERDUB" then
                     if reaper.ImGui_RadioButton(ctx, "Mono", is_mono) then is_mono = true end
