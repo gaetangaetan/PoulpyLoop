@@ -132,6 +132,10 @@ local current_take = nil
 local current_midi_note = nil
 local current_midi_velocity = nil
 local selected_click_track_index = 0  -- Pour le menu déroulant des pistes de clic
+local last_cursor_pos = -1            -- Pour suivre les changements de position du curseur
+
+-- Variable pour stocker une police ImGui personnalisée
+local title_font = nil
 
 --------------------------------------------------------------------------------
 -- Variables globales pour le Mode
@@ -516,363 +520,6 @@ local function ProcessMIDINotes()
       reaper.MIDI_Sort(take)
       ::continue::
   end
-  
-  -- Dernière étape : déplier les loops PLAY/OVERDUB qui sont plus longues que leur référence
-  local loopsToUnfold = {}
-  local referenceLoopLengths = {}
-  
-  -- 1. Collecte des informations sur toutes les loops RECORD pour référence
-  for t = 0, reaper.CountTracks(0) - 1 do
-    local track = reaper.GetTrack(0, t)
-    for i = 0, reaper.CountTrackMediaItems(track) - 1 do
-      local item = reaper.GetTrackMediaItem(track, i)
-      if item then
-        for j = 0, reaper.CountTakes(item) - 1 do
-          local take = reaper.GetTake(item, j)
-          if take and reaper.TakeIsMIDI(take) then
-            local loop_type = GetTakeMetadata(take, "loop_type")
-            local loop_name = GetTakeMetadata(take, "loop_name") or ""
-            if loop_type == "RECORD" and loop_name ~= "" then
-              local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-              referenceLoopLengths[loop_name] = item_length
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- 2. Identifier les loops PLAY/OVERDUB qui sont plus longues que leur référence
-  for t = 0, reaper.CountTracks(0) - 1 do
-    local track = reaper.GetTrack(0, t)
-    for i = 0, reaper.CountTrackMediaItems(track) - 1 do
-      local item = reaper.GetTrackMediaItem(track, i)
-      if item then
-        for j = 0, reaper.CountTakes(item) - 1 do
-          local take = reaper.GetTake(item, j)
-          if take and reaper.TakeIsMIDI(take) then
-            local loop_type = GetTakeMetadata(take, "loop_type")
-            if loop_type == "PLAY" or loop_type == "OVERDUB" then
-              local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-              if reference_loop ~= "" and referenceLoopLengths[reference_loop] then
-                local play_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-                local ref_length = referenceLoopLengths[reference_loop]
-                
-                -- Si la loop PLAY est plus longue que sa référence (sans aucune tolérance)
-                if play_length > ref_length then
-                  table.insert(loopsToUnfold, {
-                    item = item,
-                    take = take,
-                    track = track,
-                    ref_length = ref_length,
-                    play_length = play_length,
-                    play_position = reaper.GetMediaItemInfo_Value(item, "D_POSITION"),
-                    loop_type = loop_type,
-                    reference_loop = reference_loop
-                  })
-                end
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  -- 3. Déplier les loops identifiées
-  reaper.PreventUIRefresh(1)
-  reaper.Undo_BeginBlock()
-  
-  local createdItems = {} -- Garder la trace des items créés pour éviter la boucle infinie
-  
-  -- ID de commande pour l'action "Duplicate items"
-  local DUPLICATE_ITEMS_COMMAND_ID = 41295
-  
-  for _, loop in ipairs(loopsToUnfold) do
-    local ratio = loop.play_length / loop.ref_length
-    local full_copies = math.floor(ratio)
-    local partial_length = loop.play_length - (full_copies * loop.ref_length)
-    local current_position = loop.play_position
-    
-    -- Réduire la taille de la loop originale
-    reaper.SetMediaItemInfo_Value(loop.item, "D_LENGTH", loop.ref_length)
-    
-    -- Pour chaque copie complète (sauf la première qui est déjà l'item original)
-    for i = 1, full_copies - 1 do
-      current_position = current_position + loop.ref_length
-      
-      -- Méthode alternative pour dupliquer l'item en utilisant l'action de REAPER
-      local new_item = nil
-      
-      -- Sauvegarder la sélection actuelle
-      local old_sel_items = {}
-      for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
-        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
-      end
-      
-      -- Désélectionner tous les items
-      for _, item in ipairs(old_sel_items) do
-        reaper.SetMediaItemSelected(item, false)
-      end
-      
-      -- Sélectionner l'item à dupliquer
-      reaper.SetMediaItemSelected(loop.item, true)
-      
-      -- Dupliquer en utilisant la commande native de REAPER
-      reaper.Main_OnCommand(DUPLICATE_ITEMS_COMMAND_ID, 0)
-      
-      -- Récupérer l'item dupliqué (c'est maintenant le seul item sélectionné)
-      if reaper.CountSelectedMediaItems(0) > 0 then
-        new_item = reaper.GetSelectedMediaItem(0, 0)
-        table.insert(createdItems, new_item)
-        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
-        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", loop.ref_length)
-      else
-        -- Fallback si la duplication échoue
-        new_item = reaper.AddMediaItemToTrack(loop.track)
-        local new_take = reaper.AddTakeToMediaItem(new_item)
-        -- Copier les métadonnées
-        SetTakeMetadata(new_take, "loop_type", loop.loop_type)
-        SetTakeMetadata(new_take, "reference_loop", loop.reference_loop)
-        SetTakeMetadata(new_take, "pan", GetTakeMetadata(loop.take, "pan") or "0")
-        SetTakeMetadata(new_take, "volume_db", GetTakeMetadata(loop.take, "volume_db") or "0")
-        SetTakeMetadata(new_take, "pitch", GetTakeMetadata(loop.take, "pitch") or "0")
-        SetTakeMetadata(new_take, "monitoring", GetTakeMetadata(loop.take, "monitoring") or "0")
-        SetTakeMetadata(new_take, "is_mono", GetTakeMetadata(loop.take, "is_mono") or "false")
-        
-        -- Couleur personnalisée
-        local color = loop.loop_type == "PLAY" and colorPlay or colorOverdub
-        reaper.SetMediaItemTakeInfo_Value(new_take, "I_CUSTOMCOLOR", color)
-        
-        -- Nom de la loop
-        reaper.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", loop.reference_loop, true)
-        
-        table.insert(createdItems, new_item)
-        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
-        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", loop.ref_length)
-      end
-      
-      -- Restaurer la sélection originale
-      reaper.SetMediaItemSelected(new_item, false)
-      for _, item in ipairs(old_sel_items) do
-        reaper.SetMediaItemSelected(item, true)
-      end
-    end
-    
-    -- Ajouter la dernière portion partielle si nécessaire
-    if partial_length > 0 then
-      current_position = current_position + loop.ref_length
-      
-      -- Même méthode pour la partie partielle
-      local new_item = nil
-      
-      -- Sauvegarder la sélection actuelle
-      local old_sel_items = {}
-      for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
-        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
-      end
-      
-      -- Désélectionner tous les items
-      for _, item in ipairs(old_sel_items) do
-        reaper.SetMediaItemSelected(item, false)
-      end
-      
-      -- Sélectionner l'item à dupliquer
-      reaper.SetMediaItemSelected(loop.item, true)
-      
-      -- Dupliquer en utilisant la commande native de REAPER
-      reaper.Main_OnCommand(DUPLICATE_ITEMS_COMMAND_ID, 0)
-      
-      -- Récupérer l'item dupliqué
-      if reaper.CountSelectedMediaItems(0) > 0 then
-        new_item = reaper.GetSelectedMediaItem(0, 0)
-        table.insert(createdItems, new_item)
-        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
-        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", partial_length)
-      else
-        -- Fallback si la duplication échoue
-        new_item = reaper.AddMediaItemToTrack(loop.track)
-        local new_take = reaper.AddTakeToMediaItem(new_item)
-        -- Copier les métadonnées
-        SetTakeMetadata(new_take, "loop_type", loop.loop_type)
-        SetTakeMetadata(new_take, "reference_loop", loop.reference_loop)
-        SetTakeMetadata(new_take, "pan", GetTakeMetadata(loop.take, "pan") or "0")
-        SetTakeMetadata(new_take, "volume_db", GetTakeMetadata(loop.take, "volume_db") or "0")
-        SetTakeMetadata(new_take, "pitch", GetTakeMetadata(loop.take, "pitch") or "0")
-        SetTakeMetadata(new_take, "monitoring", GetTakeMetadata(loop.take, "monitoring") or "0")
-        SetTakeMetadata(new_take, "is_mono", GetTakeMetadata(loop.take, "is_mono") or "false")
-        
-        -- Couleur personnalisée
-        local color = loop.loop_type == "PLAY" and colorPlay or colorOverdub
-        reaper.SetMediaItemTakeInfo_Value(new_take, "I_CUSTOMCOLOR", color)
-        
-        -- Nom de la loop
-        reaper.GetSetMediaItemTakeInfo_String(new_take, "P_NAME", loop.reference_loop, true)
-        
-        table.insert(createdItems, new_item)
-        reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
-        reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", partial_length)
-      end
-      
-      -- Restaurer la sélection originale
-      reaper.SetMediaItemSelected(new_item, false)
-      for _, item in ipairs(old_sel_items) do
-        reaper.SetMediaItemSelected(item, true)
-      end
-    end
-  end
-  
-  -- Si des loops ont été dépliées, appliquer MIDI_SetAllEvts uniquement aux items créés
-  if #loopsToUnfold > 0 then
-    -- Traiter d'abord les items originaux qui ont été redimensionnés
-    for _, loop in ipairs(loopsToUnfold) do
-      local take = loop.take
-      if take and reaper.ValidatePtr2(0, take, "MediaItem_Take*") then
-        local item = reaper.GetMediaItemTake_Item(take)
-        local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-        local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-        local item_end = item_start + item_length
-        local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
-        local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
-        
-        -- Vider les événements MIDI existants
-        reaper.MIDI_SetAllEvts(take, "")
-        
-        -- Trouver la note à utiliser
-        local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-        local velocity = (loop.loop_type == "PLAY") and 2 or 3
-        local refNote = 0
-        
-        -- Récupérer le pitch correct à partir des recordLoopPitches
-        for t = 0, reaper.CountTracks(0) - 1 do
-          local track = reaper.GetTrack(0, t)
-          for i = 0, reaper.CountTrackMediaItems(track) - 1 do
-            local checkItem = reaper.GetTrackMediaItem(track, i)
-            local checkTake = reaper.GetActiveTake(checkItem)
-            if checkTake and reaper.TakeIsMIDI(checkTake) then
-              local check_loop_type = GetTakeMetadata(checkTake, "loop_type")
-              local check_loop_name = GetTakeMetadata(checkTake, "loop_name") or ""
-              if check_loop_type == "RECORD" and check_loop_name == reference_loop then
-                -- On a trouvé la loop de référence, extraire sa note
-                local ok, midi = reaper.MIDI_GetAllEvts(checkTake, "")
-                if ok and midi ~= "" then
-                  local stringPos = 1
-                  while stringPos < #midi do
-                    local offset, flags, msg, nextPos = string.unpack("i4Bs4", midi, stringPos)
-                    -- Si c'est une note on (0x90)
-                    if #msg >= 3 and (msg:byte(1) & 0xF0) == 0x90 and msg:byte(3) > 0 then
-                      refNote = msg:byte(2) -- La hauteur de la note (pitch)
-                      break
-                    end
-                    stringPos = nextPos
-                  end
-                end
-                break
-              end
-            end
-          end
-          if refNote > 0 then break end
-        end
-        
-        -- Insérer la note avec le pitch correct
-        reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, velocity, false)
-        
-        -- Ajouter les CCs
-        local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
-        local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
-        local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
-        local cc08 = (is_mono_str == "true") and 0 or 1
-        local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
-        local cc10 = math.floor(64 + pan_val * 63 + 0.5)
-        local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
-        local cc09 = math.floor(64 + pitch_val + 0.5)
-        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
-        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
-        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
-        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
-        local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
-        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
-        
-        reaper.MIDI_Sort(take)
-      end
-    end
-    
-    -- Puis traiter les nouveaux items créés
-    for _, item in ipairs(createdItems) do
-      if reaper.ValidatePtr2(0, item, "MediaItem*") then
-        for j = 0, reaper.CountTakes(item) - 1 do
-          local take = reaper.GetTake(item, j)
-          if take and reaper.TakeIsMIDI(take) then
-            local loop_type = GetTakeMetadata(take, "loop_type")
-            if loop_type == "PLAY" or loop_type == "OVERDUB" then
-              local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-              local velocity = (loop_type == "PLAY") and 2 or 3
-              local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-              local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-              local item_end = item_start + item_length
-              local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
-              local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
-              
-              -- Trouver la note à utiliser (même logique que pour les items originaux)
-              local refNote = 0
-              for t = 0, reaper.CountTracks(0) - 1 do
-                local track = reaper.GetTrack(0, t)
-                for i = 0, reaper.CountTrackMediaItems(track) - 1 do
-                  local checkItem = reaper.GetTrackMediaItem(track, i)
-                  local checkTake = reaper.GetActiveTake(checkItem)
-                  if checkTake and reaper.TakeIsMIDI(checkTake) then
-                    local check_loop_type = GetTakeMetadata(checkTake, "loop_type")
-                    local check_loop_name = GetTakeMetadata(checkTake, "loop_name") or ""
-                    if check_loop_type == "RECORD" and check_loop_name == reference_loop then
-                      local ok, midi = reaper.MIDI_GetAllEvts(checkTake, "")
-                      if ok and midi ~= "" then
-                        local stringPos = 1
-                        while stringPos < #midi do
-                          local offset, flags, msg, nextPos = string.unpack("i4Bs4", midi, stringPos)
-                          if #msg >= 3 and (msg:byte(1) & 0xF0) == 0x90 and msg:byte(3) > 0 then
-                            refNote = msg:byte(2)
-                            break
-                          end
-                          stringPos = nextPos
-                        end
-                      end
-                      break
-                    end
-                  end
-                end
-                if refNote > 0 then break end
-              end
-              
-              -- Insérer la note
-              reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, velocity, false)
-              
-              -- Ajouter les CCs
-              local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
-              local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
-              local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
-              local cc08 = (is_mono_str == "true") and 0 or 1
-              local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
-              local cc10 = math.floor(64 + pan_val * 63 + 0.5)
-              local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
-              local cc09 = math.floor(64 + pitch_val + 0.5)
-              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
-              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
-              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
-              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
-              local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
-              reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
-              
-              reaper.MIDI_Sort(take)
-            end
-          end
-        end
-      end
-    end
-  end
-  
-  reaper.Undo_EndBlock("Déplier les loops PLAY/OVERDUB", -1)
-  reaper.PreventUIRefresh(-1)
-  reaper.UpdateArrange()
 end
 
 -- Version de ProcessMIDINotes sans dépliement (pour éviter la récursion infinie)
@@ -1878,6 +1525,129 @@ local function UpdateTakeData(take)
     end
 end
 
+--------------------------------------------------------------------------------
+-- Fonction pour déplier une loop PLAY si elle est plus longue que sa référence
+--------------------------------------------------------------------------------
+local function UnfoldPlayLoop(take)
+  local item = reaper.GetMediaItemTake_Item(take)
+  if not item then return end
+  
+  -- Vérifier que c'est bien une loop PLAY
+  local loop_type = GetTakeMetadata(take, "loop_type")
+  if loop_type ~= "PLAY" then return end
+  
+  -- Obtenir la référence
+  local reference_loop = GetTakeMetadata(take, "reference_loop")
+  if not reference_loop or reference_loop == "" then return end
+  
+  -- Trouver la loop de référence et sa longueur
+  local track = reaper.GetMediaItemTake_Track(take)
+  local ref_length = nil
+  local num_items = reaper.CountTrackMediaItems(track)
+  
+  for i = 0, num_items - 1 do
+      local check_item = reaper.GetTrackMediaItem(track, i)
+      local check_take = reaper.GetActiveTake(check_item)
+      if check_take and reaper.TakeIsMIDI(check_take) then
+          local check_type = GetTakeMetadata(check_take, "loop_type")
+          local check_name = GetTakeMetadata(check_take, "loop_name")
+          if check_type == "RECORD" and check_name == reference_loop then
+              ref_length = reaper.GetMediaItemInfo_Value(check_item, "D_LENGTH")
+              break
+          end
+      end
+  end
+  
+  if not ref_length then return end
+  
+  -- Vérifier si la loop PLAY est plus longue que sa référence
+  local play_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+  if play_length <= ref_length then return end
+  
+  -- Calculer le nombre de copies nécessaires
+  local ratio = play_length / ref_length
+  local full_copies = math.floor(ratio)
+  local partial_length = play_length - (full_copies * ref_length)
+  local current_position = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+  
+  -- Réduire la taille de la loop originale
+  reaper.SetMediaItemInfo_Value(item, "D_LENGTH", ref_length)
+  
+  -- Commencer l'opération d'unfolding
+  reaper.PreventUIRefresh(1)
+  reaper.Undo_BeginBlock()
+  
+  -- Pour chaque copie complète (sauf la première qui est déjà l'item original)
+  for i = 1, full_copies - 1 do
+      current_position = current_position + ref_length
+      
+      -- Sauvegarder la sélection actuelle
+      local old_sel_items = {}
+      for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
+          old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+      end
+      
+      -- Désélectionner tous les items
+      for _, sel_item in ipairs(old_sel_items) do
+          reaper.SetMediaItemSelected(sel_item, false)
+      end
+      
+      -- Sélectionner l'item à dupliquer
+      reaper.SetMediaItemSelected(item, true)
+      
+      -- Dupliquer en utilisant la commande native de REAPER
+      reaper.Main_OnCommand(41295, 0)  -- Duplicate items
+      
+      -- Récupérer l'item dupliqué
+      local new_item = reaper.GetSelectedMediaItem(0, 0)
+      if new_item then
+          reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
+          reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", ref_length)
+      end
+      
+      -- Restaurer la sélection originale
+      reaper.SetMediaItemSelected(new_item, false)
+      for _, sel_item in ipairs(old_sel_items) do
+          reaper.SetMediaItemSelected(sel_item, true)
+      end
+  end
+  
+  -- Ajouter la dernière portion partielle si nécessaire
+  if partial_length > 0 then
+      current_position = current_position + ref_length
+      
+      -- Même processus que pour les copies complètes
+      local old_sel_items = {}
+      for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
+          old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+      end
+      
+      for _, sel_item in ipairs(old_sel_items) do
+          reaper.SetMediaItemSelected(sel_item, false)
+      end
+      
+      reaper.SetMediaItemSelected(item, true)
+      reaper.Main_OnCommand(41295, 0)
+      
+      local new_item = reaper.GetSelectedMediaItem(0, 0)
+      if new_item then
+          reaper.SetMediaItemInfo_Value(new_item, "D_POSITION", current_position)
+          reaper.SetMediaItemInfo_Value(new_item, "D_LENGTH", partial_length)
+      end
+      
+      reaper.SetMediaItemSelected(new_item, false)
+      for _, sel_item in ipairs(old_sel_items) do
+          reaper.SetMediaItemSelected(sel_item, true)
+      end
+  end
+  
+  reaper.Undo_EndBlock("Déplier la loop PLAY", -1)
+  reaper.PreventUIRefresh(-1)
+  reaper.UpdateArrange()
+end
+
+
+
 local function DrawLoopOptionsWindow()
   if not showLoopOptionsUI then return end
 
@@ -2069,6 +1839,7 @@ local function DrawLoopOptionsWindow()
                     reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
                     reaper.SetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR", colorPlay)
                     ProcessMIDINotes()
+                    UnfoldPlayLoop(take)  -- Appel de la fonction d'unfolding après ProcessMIDINotes
 
                 elseif loop_type == "MONITOR" then
                     SetTakeMetadata(take, "loop_type", loop_type)
@@ -2313,6 +2084,7 @@ local function mainWindow()
                     reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
                     reaper.SetMediaItemTakeInfo_Value(take, "I_CUSTOMCOLOR", colorPlay)
                     ProcessMIDINotes()
+                    UnfoldPlayLoop(take)  -- Appel de la fonction d'unfolding après ProcessMIDINotes
 
                 elseif loop_type == "MONITOR" then
                     SetTakeMetadata(take, "loop_type", loop_type)
@@ -2980,6 +2752,212 @@ local function mainWindow()
         reaper.ImGui_EndTabItem(ctx)
       end
 
+      -- Onglet "Title" (déplacé en dernière position)
+      if reaper.ImGui_BeginTabItem(ctx, "Title") then
+        -- Obtenir la position de lecture actuelle
+        local playPos = 0
+        local playState = reaper.GetPlayState()
+        
+        if playState > 0 then
+          -- En lecture, on utilise la position de lecture
+          playPos = reaper.GetPlayPosition()
+        else
+          -- À l'arrêt, on utilise la position du curseur d'édition
+          playPos = reaper.GetCursorPosition()
+        end
+        
+        -- Vérifier si la position a changé depuis la dernière frame
+        local positionChanged = (playPos ~= last_cursor_pos)
+        last_cursor_pos = playPos
+        
+        -- Variables pour stocker les informations sur le dernier marqueur
+        local lastMarkerName = nil
+        local lastMarkerPos = -math.huge -- Commencer avec une valeur très négative
+        
+        -- Récupérer tous les marqueurs et trouver celui juste avant playPos
+        local markerCount = reaper.CountProjectMarkers(0)
+        for i = 0, markerCount - 1 do
+          local retval, isRegion, pos, rgnend, name, markrgnindexnumber = reaper.EnumProjectMarkers(i)
+          if retval and not isRegion then -- On ne veut que les marqueurs, pas les régions
+            if pos <= playPos and pos > lastMarkerPos then
+              lastMarkerName = name
+              lastMarkerPos = pos
+            end
+          end
+        end
+        
+        -- Debug: Afficher les informations de détection dans la console
+        if positionChanged and reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1 then
+          reaper.ShowConsoleMsg(string.format("Position: %.2f, État: %s, Dernier marqueur: %s à %.2f\n", 
+                                              playPos, playState > 0 and "LECTURE" or "ARRÊT", 
+                                              lastMarkerName or "aucun", lastMarkerPos))
+        end
+        
+        -- Centrer le texte horizontalement et verticalement
+        local windowWidth = reaper.ImGui_GetWindowWidth(ctx)
+        local windowHeight = reaper.ImGui_GetWindowHeight(ctx)
+        
+        -- Définir la couleur rose clair
+        local roseColor = 0xFF21EAFF  -- Rose clair (format ABGR)
+        
+        -- Utiliser une approche très simplifiée avec des formes géométriques
+        if lastMarkerName and lastMarkerName ~= "" then
+          -- Mettre le texte en majuscules
+          local uppercaseText = lastMarkerName:upper()
+          
+          -- Obtenir le DrawList (canvas graphique)
+          local drawList = reaper.ImGui_GetWindowDrawList(ctx)
+          
+          -- Obtenir les positions de la fenêtre
+          local winPosX, winPosY = reaper.ImGui_GetWindowPos(ctx)
+          
+          -- Calculer la position centrée
+          local centerX = winPosX + windowWidth * 0.5
+          local centerY = winPosY + windowHeight * 0.5
+          
+          -- Dessin du cadre
+          local padding = 20  -- Espace autour du texte
+          local frame_width = windowWidth * 0.8  -- 80% de la largeur de la fenêtre
+          local frame_height = 100  -- Hauteur fixe
+          
+          -- Positions du cadre
+          local frame_x = centerX - frame_width * 0.5
+          local frame_y = centerY - frame_height * 0.5
+          
+          -- Dessiner un rectangle avec un contour pour le cadre 
+          reaper.ImGui_DrawList_AddRectFilled(drawList, frame_x, frame_y, 
+                                             frame_x + frame_width, frame_y + frame_height, 
+                                             0x20000000)  -- Fond très légèrement transparent
+                                             
+          reaper.ImGui_DrawList_AddRect(drawList, frame_x, frame_y, 
+                                       frame_x + frame_width, frame_y + frame_height, 
+                                       0x80000000, 5.0, nil, 2.0)  -- Contour noir semi-transparent, coins arrondis
+          
+          -- Dessiner le texte avec un effet de "miroir" pour le rendre plus grand visuellement
+          -- Mesurer la taille du texte
+          local textWidth = reaper.ImGui_CalcTextSize(ctx, uppercaseText)
+          local textHeight = reaper.ImGui_GetTextLineHeight(ctx)
+          
+          -- Calculer l'échelle pour que le texte occupe 80% de la largeur du cadre
+          local scale = 1.0
+          local target_width = frame_width * 0.8
+          
+          if textWidth < target_width then
+            -- Calculer combien d'espace nous avons pour que chaque caractère soit répété
+            local spacing = math.floor((target_width - textWidth) / (#uppercaseText - 1))
+            
+            -- Créer une nouvelle chaîne avec espacement entre les caractères
+            local spacedText = ""
+            for i = 1, #uppercaseText do
+              spacedText = spacedText .. uppercaseText:sub(i, i)
+              if i < #uppercaseText then
+                for j = 1, spacing / 10 do
+                  spacedText = spacedText .. " "
+                end
+              end
+            end
+            
+            -- Mettre à jour le texte et recalculer sa largeur
+            uppercaseText = spacedText
+            textWidth = reaper.ImGui_CalcTextSize(ctx, uppercaseText)
+          end
+          
+          -- Simulation d'un texte gras avec multiple rendus
+          local text_x = centerX - textWidth * 0.5
+          local text_y = centerY - textHeight * 0.5
+          
+          -- Dessiner une "ombre" pour l'effet de profondeur
+          for offset = 5, 1, -1 do
+            local alpha = (6 - offset) * 20  -- Plus c'est près du texte, plus c'est opaque
+            local shadowColor = 0x000000 | (alpha << 24)
+            reaper.ImGui_DrawList_AddText(drawList, text_x + offset, text_y + offset, shadowColor, uppercaseText)
+          end
+          
+          -- Dessiner des versions décalées pour simuler un texte plus épais
+          for x = -2, 2 do
+            for y = -2, 2 do
+              if not (x == 0 and y == 0) then
+                reaper.ImGui_DrawList_AddText(drawList, text_x + x, text_y + y, 0x80000000, uppercaseText)
+              end
+            end
+          end
+          
+          -- Dessiner le texte principal en rose
+          reaper.ImGui_DrawList_AddText(drawList, text_x, text_y, roseColor, uppercaseText)
+          
+        else
+          -- Texte "Aucun marqueur" en majuscules
+          local text = "AUCUN MARQUEUR"
+          
+          -- Obtenir le DrawList (canvas graphique)
+          local drawList = reaper.ImGui_GetWindowDrawList(ctx)
+          
+          -- Obtenir les positions de la fenêtre
+          local winPosX, winPosY = reaper.ImGui_GetWindowPos(ctx)
+          
+          -- Calculer la position centrée
+          local centerX = winPosX + windowWidth * 0.5
+          local centerY = winPosY + windowHeight * 0.5
+          
+          -- Dessin du cadre
+          local padding = 20
+          local frame_width = windowWidth * 0.8
+          local frame_height = 100
+          
+          -- Positions du cadre
+          local frame_x = centerX - frame_width * 0.5
+          local frame_y = centerY - frame_height * 0.5
+          
+          -- Dessiner un rectangle avec un contour pour le cadre
+          reaper.ImGui_DrawList_AddRectFilled(drawList, frame_x, frame_y, 
+                                             frame_x + frame_width, frame_y + frame_height, 
+                                             0x20000000)
+                                             
+          reaper.ImGui_DrawList_AddRect(drawList, frame_x, frame_y, 
+                                       frame_x + frame_width, frame_y + frame_height, 
+                                       0x80000000, 5.0, nil, 2.0)
+          
+          -- Calculer la taille du texte
+          local textWidth = reaper.ImGui_CalcTextSize(ctx, text)
+          local textHeight = reaper.ImGui_GetTextLineHeight(ctx)
+          
+          -- Calculer l'échelle pour que le texte occupe 80% de la largeur du cadre
+          local target_width = frame_width * 0.8
+          
+          if textWidth < target_width then
+            -- Calculer combien d'espace nous avons pour que chaque caractère soit répété
+            local spacing = math.floor((target_width - textWidth) / (#text - 1))
+            
+            -- Créer une nouvelle chaîne avec espacement entre les caractères
+            local spacedText = ""
+            for i = 1, #text do
+              spacedText = spacedText .. text:sub(i, i)
+              if i < #text then
+                for j = 1, spacing / 10 do
+                  spacedText = spacedText .. " "
+                end
+              end
+            end
+            
+            -- Mettre à jour le texte et recalculer sa largeur
+            text = spacedText
+            textWidth = reaper.ImGui_CalcTextSize(ctx, text)
+          end
+          
+          -- Dessiner le texte
+          local text_x = centerX - textWidth * 0.5
+          local text_y = centerY - textHeight * 0.5
+          
+          -- Effet d'ombre pour le texte gris
+          reaper.ImGui_DrawList_AddText(drawList, text_x + 1, text_y + 1, 0x40000000, text)
+          
+          -- Texte en gris
+          reaper.ImGui_DrawList_AddText(drawList, text_x, text_y, 0x808080FF, text)
+        end
+        
+        reaper.ImGui_EndTabItem(ctx)
+      end
+      
       reaper.ImGui_EndTabBar(ctx)
     end
 
