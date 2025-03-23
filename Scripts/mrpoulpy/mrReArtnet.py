@@ -4,6 +4,7 @@ from reaper_python import *
 dmx_universe = [0] * 512
 
 # Constantes
+VERSION = "0.1.0"
 DMX_UNIVERSE_SIZE = 512
 DMX_MAX_VALUE = 255
 
