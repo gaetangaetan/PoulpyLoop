@@ -1,0 +1,22 @@
+desc:mrMIDIToReArtnet
+//
+// Plugin JSFX pour contrôler les 3 premiers canaux DMX via la mémoire partagée
+//
+
+slider1:0<0,255,1>Canal DMX 1
+slider2:0<0,255,1>Canal DMX 2
+slider3:0<0,255,1>Canal DMX 3
+
+filename:"mrReaArtnetMemory"
+file_var:0,0
+
+@init
+// Initialisation de la mémoire partagée
+file_mem(0);
+
+@block
+// Écriture des valeurs des curseurs dans la mémoire partagée
+file_mem(0);
+file_var(0, slider1);
+file_var(1, slider2);
+file_var(2, slider3); 
