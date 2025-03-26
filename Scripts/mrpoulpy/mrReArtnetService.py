@@ -1,8 +1,7 @@
 from reaper_python import *
-import mmap
 import os
 import time
-import struct
+import tempfile
 
 try:
     from stupidArtnet import StupidArtnet
@@ -19,7 +18,7 @@ DMX_SIZE = 512
 
 # Variables globales
 artnet = None
-shared_mem = None
+dmx_file = None
 last_dmx_values = bytearray([0] * DMX_SIZE)
 is_running = False
 is_cleaning = False
@@ -27,16 +26,31 @@ is_cleaning = False
 def log(message):
     RPR_ShowConsoleMsg(f"{message}\n")
 
-def create_shared_mem():
-    if os.name == 'posix':
-        mem = mmap.mmap(os.open('/dev/shm/mrReaArtnetMemory', os.O_CREAT|os.O_RDWR), DMX_SIZE)
-    else:  # Windows
-        mem = mmap.mmap(-1, DMX_SIZE, "mrReaArtnetMemory")
-    mem.write(bytes(DMX_SIZE))  # Initialiser à 0
-    return mem
+def create_dmx_file():
+    # Utiliser le dossier temporaire du système
+    file_path = os.path.join(tempfile.gettempdir(), "mrReArtnetMemory")
+    log(f"Création du fichier DMX dans: {file_path}")
+    
+    try:
+        # Si le fichier existe déjà, le supprimer
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            log("Ancien fichier DMX supprimé")
+        
+        # Créer/ouvrir le fichier en mode binaire
+        f = open(file_path, "wb+")
+        # Initialiser avec des zéros
+        f.write(bytearray([0] * DMX_SIZE))
+        f.flush()
+        os.fsync(f.fileno())  # Forcer l'écriture sur le disque
+        log("Fichier DMX initialisé avec succès")
+        return f
+    except Exception as e:
+        log(f"Erreur création fichier DMX: {str(e)}")
+        return None
 
 def cleanup():
-    global artnet, shared_mem, is_running, is_cleaning
+    global artnet, dmx_file, is_running, is_cleaning
     
     if is_cleaning:
         return
@@ -59,27 +73,38 @@ def cleanup():
         except Exception as e:
             log(f"Erreur arrêt Artnet: {str(e)}")
     
-    if shared_mem:
+    if dmx_file:
         try:
-            shared_mem.close()
+            dmx_file.close()
+            # Supprimer le fichier
+            file_path = os.path.join(tempfile.gettempdir(), "mrReArtnetMemory")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                log("Fichier DMX supprimé")
         except Exception as e:
-            log(f"Erreur fermeture mémoire partagée: {str(e)}")
+            log(f"Erreur fermeture fichier DMX: {str(e)}")
     
     log("Nettoyage terminé")
 
 def check_dmx_changes():
-    global last_dmx_values
+    global last_dmx_values, dmx_file
     
     try:
-        # Lire toute la mémoire partagée
-        shared_mem.seek(0)
-        current_values = shared_mem.read(DMX_SIZE)
+        # Lire le fichier
+        dmx_file.seek(0)
+        current_values = bytearray(dmx_file.read(DMX_SIZE))
+        
+        # Debug: afficher les 3 premières valeurs
+        debug_values = [current_values[i] for i in range(3)]
+        if debug_values != [0, 0, 0]:
+            log(f"Valeurs DMX lues: {debug_values}")
         
         # Vérifier les changements
         if current_values != last_dmx_values:
             if artnet:
                 artnet.set(current_values)
-            last_dmx_values = bytearray(current_values)
+                log(f"Nouvelles valeurs DMX envoyées: {debug_values}")
+            last_dmx_values = current_values.copy()
             
     except Exception as e:
         log(f"Erreur lecture/envoi DMX: {str(e)}")
@@ -90,16 +115,18 @@ def check_dmx_changes():
         RPR_defer("check_dmx_changes()")
 
 def init():
-    global artnet, shared_mem, is_running, is_cleaning
+    global artnet, dmx_file, is_running, is_cleaning
     
     log("Initialisation du service ReaArtnet...")
     is_cleaning = False
     is_running = True
     
     try:
-        # Créer la mémoire partagée
-        shared_mem = create_shared_mem()
-        log("Mémoire partagée créée")
+        # Créer le fichier DMX
+        dmx_file = create_dmx_file()
+        if not dmx_file:
+            raise Exception("Impossible de créer le fichier DMX")
+        log("Fichier DMX créé")
         
         if ARTNET_AVAILABLE:
             # Initialiser Artnet

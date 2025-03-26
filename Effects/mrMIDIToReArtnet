@@ -7,16 +7,20 @@ slider1:0<0,255,1>Canal DMX 1
 slider2:0<0,255,1>Canal DMX 2
 slider3:0<0,255,1>Canal DMX 3
 
-filename:"mrReaArtnetMemory"
-file_var:0,0
-
 @init
-// Initialisation de la mémoire partagée
-file_mem(0);
+// Initialisation du fichier DMX
+filename = "C:/Users/mrpoulpy/AppData/Local/Temp/mrReArtnetMemory";
+file_mem(0, 512, 1);
+
+// Valeur de test au démarrage
+slider1 = 128;
+slider2 = 64;
+slider3 = 255;
 
 @block
 // Écriture des valeurs des curseurs dans la mémoire partagée
-file_mem(0);
+file_mem(0);  // S'assurer qu'on est au début du fichier
 file_var(0, slider1);
 file_var(1, slider2);
-file_var(2, slider3); 
+file_var(2, slider3);
+file_avail(0);  // Forcer l'écriture 
