@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0540
+desc:PoulpyLoop_v0542
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
@@ -52,7 +52,7 @@ loop(NUM_NOTES,
   i += 1;
 );
 
-strcpy(current_display, "Sampler init OK");
+//strcpy(current_display, "Sampler init OK");
 strcpy(time_left_str, "Loading...");
 strcpy(debug_str, "");
 strcpy(debug_str2, "");
@@ -234,10 +234,10 @@ measure_duration = gmem[sync_base + 2];
 using_offsets = (offset_position > 0 && measure_duration > 0) ? 1 : 0;
 
 // Message de débogage
-sprintf(debug_str, "État: %s | Track: %d | Offset: %.3f | Durée: %.3f", 
+/*sprintf(debug_str, "État: %s | Track: %d | Offset: %.3f | Durée: %.3f", 
          play_state ? "LECTURE" : "ARRÊTÉ",
          track_id, offset_position, measure_duration);
-
+*/
 // Variable pour suivre si des notes ont été traitées dans ce bloc
 midi_notes_processed = 0;
 
@@ -255,19 +255,19 @@ while (
       (idx >= 0) ? (
         (msg2 == 7) ? (
             volumeFactor = cc7ToGain(msg3);
-            sprintf(current_display, "CC7 => volume=%.2f", volumeFactor);
+            //sprintf(current_display, "CC7 => volume=%.2f", volumeFactor);
         ) : (msg2 == 9) ? (
             // CC09 : pitch = valeur - 64
             slider2 = msg3 - 64;
-            sprintf(current_display, "CC9 => pitch=%d", slider2);
+            //sprintf(current_display, "CC9 => pitch=%d", slider2);
         ) : (msg2 == 10) ? (
             panFactor = cc10ToPan(msg3);
-            sprintf(current_display, "CC10 => pan=%.2f", panFactor);
+            //sprintf(current_display, "CC10 => pan=%.2f", panFactor);
         ) : (msg2 == 8) ?(
             mode = msg3;
         ) : (msg2 == 11) ? (
             monitoring = msg3 > 0 ? 1 : 0;
-            sprintf(current_display, "CC11 => monitoring=%s", monitoring ? "ON" : "OFF");
+            //sprintf(current_display, "CC11 => monitoring=%s", monitoring ? "ON" : "OFF");
         );
       );
     );
@@ -603,19 +603,19 @@ gfx_set(1, 1, 1, 1);
 gfx_drawstr(current_display);
 
 gfx_x = 10;
-gfx_y = 90;
+gfx_y = 60;
 gfx_drawstr(time_left_str);
 
 // Afficher l'identifiant de l'instance et la quantité de mémoire utilisée
 memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
 gfx_x = 10;
-gfx_y = 130;
+gfx_y = 70;
 gfx_drawstr(debug_str);
 
 // Afficher le mode actuel
 playback_mode = get_playback_mode();
 gfx_x = 10;
-gfx_y = 170;
+gfx_y = 90;
 (playback_mode == 1) ? (
   gfx_set(1, 0.5, 0.5, 1); // Rouge pour PLAYBACK
   gfx_drawstr("Mode: PLAYBACK");
@@ -626,7 +626,8 @@ gfx_y = 170;
 
 // Afficher l'état de la synchronisation
 gfx_x = 200;
-gfx_y = 170;
+gfx_y = 100;
+/*
 (using_offsets) ? (
   gfx_set(0.5, 1, 0.5, 1); // Vert pour actif
   gfx_drawstr("OFFSETS ACTIFS");
@@ -634,11 +635,11 @@ gfx_y = 170;
   gfx_set(1, 0.5, 0.5, 1); // Rouge pour inactif
   gfx_drawstr("OFFSETS INACTIFS");
 );
-
+*/
 // Afficher l'état de la synchronisation détaillé
 gfx_x = 10;
-gfx_y = 210;
+gfx_y = 120;
 gfx_set(1, 1, 1, 1); // Blanc
-sprintf(debug_str2, "Play state: %d | Track: %d | Offset: %.3f | Mesure: %.3f", 
-        play_state, track_id, offset_position, measure_duration);
+//sprintf(debug_str2, "Play state: %d | Track: %d | Offset: %.3f | Mesure: %.3f", 
+//        play_state, track_id, offset_position, measure_duration);
 gfx_drawstr(debug_str2);
