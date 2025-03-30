@@ -61,6 +61,8 @@ local current_midi_velocity = nil
 local selected_click_track_index = 0
 local last_cursor_pos = -1
 local title_font = nil
+local progress_message = ""  -- Nouvelle variable pour le message de progression
+local processing_items = {}  -- Nouvelle variable pour stocker les items en cours de traitement
 
 -- Variables pour les modes
 local record_monitor_loops = false
@@ -484,6 +486,24 @@ local function DrawLoopEditor()
         
         reaper.ImGui_Separator(ctx)
 
+        -- Afficher le nombre d'éléments sélectionnés
+        local selected_items = {}
+        local num_tracks = reaper.CountTracks(0)
+        for t = 0, num_tracks - 1 do
+            local track = reaper.GetTrack(0, t)
+            local item_count = reaper.CountTrackMediaItems(track)
+            for i = 0, item_count - 1 do
+                local item = reaper.GetTrackMediaItem(track, i)
+                if reaper.IsMediaItemSelected(item) then
+                    local take = reaper.GetActiveTake(item)
+                    if take and reaper.TakeIsMIDI(take) then
+                        table.insert(selected_items, {item = item, take = take})
+                    end
+                end
+            end
+        end
+        reaper.ImGui_Text(ctx, string.format("Éléments sélectionnés : %d", #selected_items))
+
         -- Type de Loop
         local loop_type = loop_types[selected_loop_type_index + 1]
         if reaper.ImGui_BeginCombo(ctx, "Type de Loop", loop_type) then
@@ -614,6 +634,85 @@ local function DrawLoopEditor()
 
         -- Bouton Appliquer
         if reaper.ImGui_Button(ctx, "Appliquer") then
+            -- Si plusieurs items sont sélectionnés
+            if #selected_items > 1 then
+                -- Vérifier que tous les items sont du même type
+                local first_type = GetTakeMetadata(selected_items[1].take, "loop_type")
+                local all_same_type = true
+                local all_valid_type = (first_type == "PLAY" or first_type == "MONITOR")
+
+                for i = 2, #selected_items do
+                    local item_type = GetTakeMetadata(selected_items[i].take, "loop_type")
+                    if item_type ~= first_type then
+                        all_same_type = false
+                        break
+                    end
+                    if item_type ~= "PLAY" and item_type ~= "MONITOR" then
+                        all_valid_type = false
+                        break
+                    end
+                end
+
+                if not all_same_type then
+                    reaper.ShowMessageBox("Les items sélectionnés doivent être du même type.", "Erreur", 0)
+                    return
+                end
+
+                if not all_valid_type then
+                    reaper.ShowMessageBox("La modification en masse n'est autorisée que pour les types PLAY et MONITOR.", "Erreur", 0)
+                    return
+                end
+
+                -- Appliquer les modifications à tous les items sélectionnés
+                processing_items = selected_items  -- Stocker les items à traiter
+                local current_item_index = 1
+                
+                local function processNextItem()
+                    if current_item_index <= #processing_items then
+                        local item_data = processing_items[current_item_index]
+                        local item = item_data.item
+                        local take = item_data.take
+                        local item_type = GetTakeMetadata(take, "loop_type")
+
+                        -- Mettre à jour le message de progression
+                        progress_message = string.format("Traitement en cours... (%d/%d)", current_item_index, #processing_items)
+                        
+                        if item_type == "PLAY" then
+                            SetTakeMetadata(take, "loop_type", item_type)
+                            SetTakeMetadata(take, "reference_loop", reference_loop)
+                            SetTakeMetadata(take, "pan", tostring(pan))
+                            SetTakeMetadata(take, "volume_db", tostring(volume_db))
+                            SetTakeMetadata(take, "pitch", tostring(pitch))
+                            SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                            reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
+                            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.PLAY)
+                            ProcessMIDINotes()
+                            UnfoldPlayLoop(take)
+                        elseif item_type == "MONITOR" then
+                            SetTakeMetadata(take, "loop_type", item_type)
+                            SetTakeMetadata(take, "pan", tostring(pan))
+                            SetTakeMetadata(take, "volume_db", tostring(volume_db))
+                            SetTakeMetadata(take, "is_mono", tostring(is_mono))
+                            SetTakeMetadata(take, "monitoring", "1")  -- Toujours ON
+                            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.MONITOR)
+                            ProcessMIDINotes()
+                        end
+
+                        current_item_index = current_item_index + 1
+                        reaper.defer(processNextItem)
+                    else
+                        -- Traitement terminé - effacer le message et la liste
+                        progress_message = ""
+                        processing_items = {}
+                    end
+                end
+
+                -- Démarrer le traitement
+                reaper.defer(processNextItem)
+                return
+            end
+
+            -- Code existant pour un seul item
             if loop_type == "RECORD" then
                 local valid, message = IsLoopNameValid(take, loop_name)
                 if not valid then
@@ -655,7 +754,7 @@ local function DrawLoopEditor()
                 reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.PLAY)
                 ProcessMIDINotes()
-                UnfoldPlayLoop(take)  -- Appel de la fonction d'unfolding après ProcessMIDINotes
+                UnfoldPlayLoop(take)
 
             elseif loop_type == "MONITOR" then
                 SetTakeMetadata(take, "loop_type", loop_type)
@@ -676,6 +775,11 @@ local function DrawLoopEditor()
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.UNUSED)
                 ProcessMIDINotes()
             end
+        end
+
+        -- Afficher le message de progression s'il existe
+        if progress_message ~= "" then
+            reaper.ImGui_Text(ctx, progress_message)
         end
 
     else
