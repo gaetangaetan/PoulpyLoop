@@ -67,6 +67,7 @@ local processing_items = {}
 local show_modulation = false
 local window_height = 500  -- Nouvelle variable pour la hauteur de la fenêtre
 local window_width = 700   -- Nouvelle variable pour la largeur de la fenêtre
+local render_realtime = true  -- true = realtime (idle), false = full speed
 
 -- Nouveaux paramètres de modulation
 local modulation_params = {
@@ -1133,6 +1134,146 @@ local function DrawOptions()
     reaper.ImGui_EndTable(ctx)
 end
 
+local function RenderSelection()
+    -- Vérifier qu'il y a au moins un item sélectionné
+    local sel_count = reaper.CountSelectedMediaItems(0)
+    if sel_count == 0 then
+        reaper.ShowMessageBox("Aucun bloc sélectionné.", "Erreur", 0)
+        return
+    end
+    
+    -- Sauvegarder le mode actuel et passer en PLAYBACK si nécessaire
+    local was_live_mode = not get_playback_mode()
+    if was_live_mode then
+        save_playback_mode(true)  -- Passer en mode PLAYBACK
+    end
+    
+    -- Trouver les bornes de la sélection et collecter les pistes
+    local min_pos = math.huge
+    local max_pos = 0
+    local tracks_to_render = {}  -- Table pour stocker {track = track, name = name}
+    
+    for i = 0, sel_count - 1 do
+        local item = reaper.GetSelectedMediaItem(0, i)
+        local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+        local item_end = item_pos + reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+        
+        -- Mettre à jour les bornes globales
+        min_pos = math.min(min_pos, item_pos)
+        max_pos = math.max(max_pos, item_end)
+        
+        -- Récupérer la piste et ses infos
+        local track = reaper.GetMediaItem_Track(item)
+        local track_found = false
+        for _, t in ipairs(tracks_to_render) do
+            if t.track == track then
+                track_found = true
+                break
+            end
+        end
+        
+        if not track_found then
+            -- Récupérer le nom de la piste
+            local _, track_name = reaper.GetTrackName(track)
+            
+            -- Récupérer le nom du bloc pour le nom de fichier
+            local take = reaper.GetActiveTake(item)
+            local block_name = ""
+            if take and reaper.TakeIsMIDI(take) then
+                local loop_type = GetTakeMetadata(take, "loop_type") or ""
+                if loop_type == "RECORD" then
+                    block_name = GetTakeMetadata(take, "loop_name") or ""
+                elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
+                    block_name = GetTakeMetadata(take, "reference_loop") or ""
+                end
+            end
+            
+            -- Ajouter la piste à la liste
+            table.insert(tracks_to_render, {
+                track = track,
+                track_name = track_name,
+                block_name = block_name
+            })
+        end
+    end
+    
+    -- Vérifier que nous avons des bornes valides
+    if min_pos == math.huge or max_pos <= min_pos then
+        reaper.ShowMessageBox("Impossible de déterminer les bornes de la sélection.", "Erreur", 0)
+        return
+    end
+    
+    -- Définir la sélection temporelle
+    reaper.GetSet_LoopTimeRange(true, false, min_pos, max_pos, false)
+    
+    -- Créer le dossier Media s'il n'existe pas
+    local media_path = reaper.GetProjectPath() .. "/Media"
+    if not reaper.file_exists(media_path) then
+        reaper.RecursiveCreateDirectory(media_path, 0)
+    end
+    
+    -- Sauvegarder la sélection de pistes actuelle
+    local saved_tracks = {}
+    local num_tracks = reaper.CountTracks(0)
+    for i = 0, num_tracks - 1 do
+        local track = reaper.GetTrack(0, i)
+        if reaper.IsTrackSelected(track) then
+            table.insert(saved_tracks, track)
+            reaper.SetTrackSelected(track, false)
+        end
+    end
+    
+    -- Pour chaque piste à rendre
+    for _, track_info in ipairs(tracks_to_render) do
+        -- Créer le nom de fichier
+        local timestamp = os.date("%Y%m%d_%H%M%S")
+        local base_name = track_info.block_name ~= "" and track_info.block_name or track_info.track_name
+        local file_name = base_name .. "_" .. timestamp
+        
+        -- Sélectionner uniquement cette piste
+        reaper.SetTrackSelected(track_info.track, true)
+        
+        -- Configurer le rendu
+        reaper.PreventUIRefresh(1)
+        
+        -- Configurer les paramètres de rendu
+        reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", file_name, true)
+        reaper.GetSetProjectInfo_String(0, "RENDER_PATH", media_path, true)
+        
+        -- Paramètres de rendu
+        reaper.SNM_SetIntConfigVar("projrenderstems", 3)     -- 3 = stems (selected tracks)
+        reaper.SNM_SetIntConfigVar("projrendersrate", 2)     -- 2 = stereo (attention: nom trompeur!)
+        reaper.SNM_SetIntConfigVar("projrendernch", 0)       -- 0 = project sample rate (attention: nom trompeur!)
+        reaper.SNM_SetIntConfigVar("projrenderlimit", render_realtime and 4 or 0)  -- 4 = offline render (idle), 0 = full speed
+        reaper.SNM_SetIntConfigVar("renderclosewhendone", 1) -- 1 = close when done
+        reaper.SNM_SetIntConfigVar("renderaddtoproj", 1)     -- 1 = add rendered items to project
+        
+        -- Options supplémentaires pour assurer un bon rendu
+        reaper.SNM_SetIntConfigVar("projrenderrateinternal", 1) -- 1 = use project sample rate for mixing
+        reaper.SNM_SetIntConfigVar("projrenderresample", 4)     -- 4 = better quality (384pt Sinc)
+
+                
+        reaper.PreventUIRefresh(-1)
+
+
+        -- Lancer le rendu
+        reaper.Main_OnCommand(41824, 0) -- Render project, using the most recent render settings
+        
+        -- Désélectionner la piste
+        reaper.SetTrackSelected(track_info.track, false)
+    end
+    
+    -- Restaurer la sélection de pistes originale
+    for _, track in ipairs(saved_tracks) do
+        reaper.SetTrackSelected(track, true)
+    end
+    
+    -- Revenir en mode LIVE si nécessaire
+    if was_live_mode then
+        save_playback_mode(false)  -- Retour en mode LIVE
+    end
+end
+
 local function DrawTools()
     -- Partie 1: Outils de base
     reaper.ImGui_Text(ctx, "Outils de base :")
@@ -1157,7 +1298,26 @@ local function DrawTools()
 
     reaper.ImGui_Separator(ctx)
     
-    -- Partie 2: Importation ALK
+    -- Partie 2: Rendu audio
+    reaper.ImGui_Text(ctx, "Rendu audio :")
+    reaper.ImGui_Separator(ctx)
+    
+    -- Radio buttons pour le mode de rendu
+    if reaper.ImGui_RadioButton(ctx, "Full Speed", not render_realtime) then
+        render_realtime = false
+    end
+    reaper.ImGui_SameLine(ctx)
+    if reaper.ImGui_RadioButton(ctx, "Realtime", render_realtime) then
+        render_realtime = true
+    end
+    
+    if reaper.ImGui_Button(ctx, "Render Selection") then
+        RenderSelection()
+    end
+
+    reaper.ImGui_Separator(ctx)
+    
+    -- Partie 3: Importation ALK
     reaper.ImGui_Text(ctx, "Importation ALK :")
     reaper.ImGui_Separator(ctx)
     
@@ -1193,7 +1353,7 @@ local function DrawTools()
 
     reaper.ImGui_Separator(ctx)
 
-    -- Partie 3: Automation du clic
+    -- Partie 4: Automation du clic
     reaper.ImGui_Text(ctx, "Automation du clic :")
     reaper.ImGui_Separator(ctx)
     
@@ -1438,5 +1598,6 @@ M.addLooperBase = addLooperBase
 M.addLooper = addLooper
 M.UpdateTakeData = UpdateTakeData
 M.DrawMainWindow = DrawMainWindow
+M.RenderSelection = RenderSelection
 
 return M 
