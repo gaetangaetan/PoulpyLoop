@@ -39,6 +39,7 @@ local parseALK = core.parseALK
 local importProject = core.importProject
 local importMetronome = core.importMetronome
 local debug_console = core.debug_console
+local ApplyMIDIChanges = core.ApplyMIDIChanges
 
 -- Module à exporter
 local M = {}
@@ -61,8 +62,25 @@ local current_midi_velocity = nil
 local selected_click_track_index = 0
 local last_cursor_pos = -1
 local title_font = nil
-local progress_message = ""  -- Nouvelle variable pour le message de progression
-local processing_items = {}  -- Nouvelle variable pour stocker les items en cours de traitement
+local progress_message = ""
+local processing_items = {}
+local show_modulation = false
+local window_height = 500  -- Nouvelle variable pour la hauteur de la fenêtre
+local window_width = 700   -- Nouvelle variable pour la largeur de la fenêtre
+
+-- Nouveaux paramètres de modulation
+local modulation_params = {
+    { name = "Mod 1", start_value = 0, end_value = 0, start_cc = 21, end_cc = 22 },
+    { name = "Mod 2", start_value = 0, end_value = 0, start_cc = 23, end_cc = 24 },
+    { name = "Mod 3", start_value = 0, end_value = 0, start_cc = 25, end_cc = 26 },
+    { name = "Mod 4", start_value = 0, end_value = 0, start_cc = 27, end_cc = 28 },
+    { name = "Mod 5", start_value = 0, end_value = 0, start_cc = 29, end_cc = 30 },
+    { name = "Mod 6", start_value = 0, end_value = 0, start_cc = 31, end_cc = 32 },
+    { name = "Mod 7", start_value = 0, end_value = 0, start_cc = 33, end_cc = 34 },
+    { name = "Mod 8", start_value = 0, end_value = 0, start_cc = 35, end_cc = 36 },
+    { name = "Mod 9", start_value = 0, end_value = 0, start_cc = 37, end_cc = 38 },
+    { name = "Mod 10", start_value = 0, end_value = 0, start_cc = 39, end_cc = 40 }
+}
 
 -- Variables pour les modes
 local record_monitor_loops = false
@@ -81,6 +99,9 @@ local looperUsage = {}
 -- Variables pour l'importation ALK
 local alkData = nil
 local errorMessage = ""
+
+-- Préparation des variables pour les sélections multiples
+local midi_data = nil  -- Pour stocker les données MIDI entre les appels
 
 --------------------------------------------------------------------------------
 -- Fonctions locales
@@ -292,29 +313,34 @@ end
 --------------------------------------------------------------------------------
 -- Fonctions de traitement MIDI
 --------------------------------------------------------------------------------
-local function ProcessMIDINotes()
+local function ProcessMIDINotes(track, return_data)
     local noteCounters = {}
     local recordLoopPitches = {}
     local allTakes = {}
 
+    -- Récupérer tous les items MIDI d'une piste ou de toutes les pistes
     local num_tracks = reaper.CountTracks(0)
     for t = 0, num_tracks - 1 do
-        local track = reaper.GetTrack(0, t)
-        for i = 0, reaper.CountTrackMediaItems(track) - 1 do
-            local item = reaper.GetTrackMediaItem(track, i)
-            if item then
-                for j = 0, reaper.CountTakes(item) - 1 do
-                    local take = reaper.GetTake(item, j)
-                    if take and reaper.TakeIsMIDI(take) then
-                        local loop_type = GetTakeMetadata(take, "loop_type")
-                        if loop_type then
-                            table.insert(allTakes, {
-                                take = take,
-                                item = item,
-                                start_time = reaper.GetMediaItemInfo_Value(item, "D_POSITION"),
-                                loop_type = loop_type,
-                                track = track
-                            })
+        local current_track = reaper.GetTrack(0, t)
+        -- Si un filtre de piste est spécifié, ignorer les autres pistes
+        if not track or current_track == track then
+            local item_count = reaper.CountTrackMediaItems(current_track)
+            for i = 0, item_count - 1 do
+                local item = reaper.GetTrackMediaItem(current_track, i)
+                if item then
+                    for j = 0, reaper.CountTakes(item) - 1 do
+                        local take = reaper.GetTake(item, j)
+                        if take and reaper.TakeIsMIDI(take) then
+                            local loop_type = GetTakeMetadata(take, "loop_type")
+                            if loop_type then
+                                table.insert(allTakes, {
+                                    take = take,
+                                    item = item,
+                                    start_time = reaper.GetMediaItemInfo_Value(item, "D_POSITION"),
+                                    loop_type = loop_type,
+                                    track = current_track
+                                })
+                            end
                         end
                     end
                 end
@@ -322,7 +348,7 @@ local function ProcessMIDINotes()
         end
     end
 
-    -- Trier les takes par piste et position
+    -- Tri par piste/position temporelle
     table.sort(allTakes, function(a, b)
         local trackA_id = reaper.GetMediaTrackInfo_Value(a.track, "IP_TRACKNUMBER")
         local trackB_id = reaper.GetMediaTrackInfo_Value(b.track, "IP_TRACKNUMBER")
@@ -333,16 +359,15 @@ local function ProcessMIDINotes()
         end
     end)
 
-    -- Traiter chaque take
+    -- Traitement des items
     for _, entry in ipairs(allTakes) do
         local take = entry.take
         local item = entry.item
         local loop_type = entry.loop_type
-        local track = entry.track
-        local track_id = reaper.GetMediaTrackInfo_Value(track, "IP_TRACKNUMBER")
-
+        local track_id = reaper.GetMediaTrackInfo_Value(entry.track, "IP_TRACKNUMBER")
+        
         if not noteCounters[track_id] then
-            noteCounters[track_id] = 1
+            noteCounters[track_id] = 1  -- Démarrer à 1
             recordLoopPitches[track_id] = {}
         end
 
@@ -355,21 +380,23 @@ local function ProcessMIDINotes()
         local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
         local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
 
-        -- Traiter selon le type de loop
         if loop_type == "RECORD" then
             local pitch = noteCounters[track_id]
             noteCounters[track_id] = noteCounters[track_id] + 1
             local loop_name = GetTakeMetadata(take, "loop_name") or ""
             recordLoopPitches[track_id][loop_name] = pitch
             reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 1, false)
-
-        elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
+        
+        elseif loop_type == "PLAY" then
             local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
             local ref_name = reference_loop:match("%d%d%s+(.*)")
-            local refNote = recordLoopPitches[track_id][reference_loop] or
-                          (ref_name and recordLoopPitches[track_id][ref_name])
+            local refNote = 0
             
-            if not refNote then
+            if recordLoopPitches[track_id][reference_loop] then
+                refNote = recordLoopPitches[track_id][reference_loop]
+            elseif ref_name and recordLoopPitches[track_id][ref_name] then
+                refNote = recordLoopPitches[track_id][ref_name]
+            else
                 for name, pitch in pairs(recordLoopPitches[track_id]) do
                     local name_without_prefix = name:match("%d%d%s+(.*)")
                     if name_without_prefix and name_without_prefix == ref_name then
@@ -378,17 +405,38 @@ local function ProcessMIDINotes()
                     end
                 end
             end
-
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote or 0,
-                                 loop_type == "PLAY" and 2 or 3, false)
-
+            
+            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 2, false)
+        
+        elseif loop_type == "OVERDUB" then
+            -- Même logique que pour PLAY
+            local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
+            local ref_name = reference_loop:match("%d%d%s+(.*)")
+            local refNote = 0
+            
+            if recordLoopPitches[track_id][reference_loop] then
+                refNote = recordLoopPitches[track_id][reference_loop]
+            elseif ref_name and recordLoopPitches[track_id][ref_name] then
+                refNote = recordLoopPitches[track_id][ref_name]
+            else
+                for name, pitch in pairs(recordLoopPitches[track_id]) do
+                    local name_without_prefix = name:match("%d%d%s+(.*)")
+                    if name_without_prefix and name_without_prefix == ref_name then
+                        refNote = pitch
+                        break
+                    end
+                end
+            end
+            
+            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 3, false)
+        
         elseif loop_type == "MONITOR" then
             local pitch = noteCounters[track_id]
             noteCounters[track_id] = noteCounters[track_id] + 1
             reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 4, false)
         end
 
-        -- Insérer les CC MIDI
+        -- Insertion des CC MIDI pour les paramètres de modulation
         if loop_type ~= "UNUSED" then
             local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
             local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
@@ -399,16 +447,31 @@ local function ProcessMIDINotes()
             local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
             local cc09 = math.floor(64 + pitch_val + 0.5)
             local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
-
+            
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
+            
+            -- Insérer les CC MIDI pour les paramètres de modulation
+            for i, param in ipairs(modulation_params) do
+                local start_value = tonumber(GetTakeMetadata(take, "mod_" .. i .. "_start")) or 0
+                local end_value = tonumber(GetTakeMetadata(take, "mod_" .. i .. "_end")) or 0
+                reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, param.start_cc, start_value, false)
+                reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, param.end_cc, end_value, false)
+            end
         end
 
         reaper.MIDI_Sort(take)
         ::continue::
+    end
+
+    if return_data then
+        return {
+            noteCounters = noteCounters,
+            recordLoopPitches = recordLoopPitches
+        }
     end
 end
 
@@ -437,6 +500,14 @@ local function UpdateTakeData(take)
         reference_loop = GetTakeMetadata(take, "reference_loop") or ""
         pitch = tonumber(GetTakeMetadata(take, "pitch")) or 0
         
+        -- Charger les valeurs des paramètres de modulation
+        for i, param in ipairs(modulation_params) do
+            local start_value = tonumber(GetTakeMetadata(take, "mod_" .. i .. "_start")) or 0
+            local end_value = tonumber(GetTakeMetadata(take, "mod_" .. i .. "_end")) or 0
+            param.start_value = start_value
+            param.end_value = end_value
+        end
+        
         local lt = GetTakeMetadata(take, "loop_type") or "RECORD"
         selected_loop_type_index = 0
         for i, v in ipairs(loop_types) do
@@ -455,6 +526,11 @@ end
 --------------------------------------------------------------------------------
 local function init()
     buildRecInputOptions()
+    -- Restaurer la largeur de la fenêtre
+    local saved_width = reaper.GetExtState("PoulpyLoopy", "window_width")
+    if saved_width ~= "" then
+        window_width = tonumber(saved_width)
+    end
     return ctx
 end
 
@@ -489,6 +565,9 @@ local function DrawLoopEditor()
         -- Afficher le nombre d'éléments sélectionnés
         local selected_items = {}
         local num_tracks = reaper.CountTracks(0)
+        local selected_track = nil
+        local all_same_track = true
+        
         for t = 0, num_tracks - 1 do
             local track = reaper.GetTrack(0, t)
             local item_count = reaper.CountTrackMediaItems(track)
@@ -497,16 +576,25 @@ local function DrawLoopEditor()
                 if reaper.IsMediaItemSelected(item) then
                     local take = reaper.GetActiveTake(item)
                     if take and reaper.TakeIsMIDI(take) then
-                        table.insert(selected_items, {item = item, take = take})
+                        table.insert(selected_items, {item = item, take = take, track = track})
+                        if not selected_track then
+                            selected_track = track
+                        elseif selected_track ~= track then
+                            all_same_track = false
+                        end
                     end
                 end
             end
         end
+        
         reaper.ImGui_Text(ctx, string.format("Éléments sélectionnés : %d", #selected_items))
+        if #selected_items > 1 and not all_same_track then
+            reaper.ImGui_TextColored(ctx, 0xFF0000FF, "Attention : Tous les blocs sélectionnés doivent être sur la même piste!")
+        end
 
         -- Type de Loop
         local loop_type = loop_types[selected_loop_type_index + 1]
-        if reaper.ImGui_BeginCombo(ctx, "Type de Loop", loop_type) then
+        if reaper.ImGui_BeginCombo(ctx, "Type", loop_type) then
             for i, v in ipairs(loop_types) do
                 local is_sel = (selected_loop_type_index == (i - 1))
                 if reaper.ImGui_Selectable(ctx, v, is_sel) then
@@ -523,22 +611,22 @@ local function DrawLoopEditor()
 
         -- Options spécifiques selon le type de loop
         if loop_type == "RECORD" then
-            local changed, new_name = reaper.ImGui_InputText(ctx, "Nom de la Loop", loop_name, 256)
+            local changed, new_name = reaper.ImGui_InputText(ctx, "Nom", loop_name, 256)
             if changed then loop_name = trim(new_name) end
 
             if reaper.ImGui_RadioButton(ctx, "Mono", is_mono) then is_mono = true end
             reaper.ImGui_SameLine(ctx)
             if reaper.ImGui_RadioButton(ctx, "Stéréo", not is_mono) then is_mono = false end
 
-            local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Panoramique", pan, -1.0, 1.0, "%.2f")
+            local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Pan", pan, -1.0, 1.0, "%.2f")
             if pan_changed then pan = new_pan end
 
-            local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Volume (dB)", volume_db, -20.0, 10.0, "%.2f")
+            local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Vol (dB)", volume_db, -20.0, 10.0, "%.2f")
             if vol_changed then volume_db = new_vol end
 
-            if reaper.ImGui_RadioButton(ctx, "Monitoring ON", monitoring == 1) then monitoring = 1 end
-            reaper.ImGui_SameLine(ctx)
-            if reaper.ImGui_RadioButton(ctx, "Monitoring OFF", monitoring == 0) then monitoring = 0 end
+            if reaper.ImGui_Checkbox(ctx, "Monitoring", monitoring == 1) then
+                monitoring = (monitoring == 1) and 0 or 1
+            end
 
         elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
             local prev_loops = GetPreviousRecordLoopsInFolder(take)
@@ -574,7 +662,7 @@ local function DrawLoopEditor()
                 end
             end
             
-            if reaper.ImGui_BeginCombo(ctx, "Loop de Référence", prev_loops[sel_idx] or "(Aucun)") then
+            if reaper.ImGui_BeginCombo(ctx, "Réf", prev_loops[sel_idx] or "(Aucun)") then
                 for i, name in ipairs(prev_loops) do
                     local is_sel = (sel_idx == i)
                     if reaper.ImGui_Selectable(ctx, name, is_sel) then
@@ -592,10 +680,10 @@ local function DrawLoopEditor()
                 if reaper.ImGui_RadioButton(ctx, "Stéréo", not is_mono) then is_mono = false end
             end
 
-            local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Panoramique", pan, -1.0, 1.0, "%.2f")
+            local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Pan", pan, -1.0, 1.0, "%.2f")
             if pan_changed then pan = new_pan end
 
-            local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Volume (dB)", volume_db, -20.0, 10.0, "%.2f")
+            local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Vol (dB)", volume_db, -20.0, 10.0, "%.2f")
             if vol_changed then volume_db = new_vol end
 
             -- Pour le type PLAY, monitoring OFF par défaut
@@ -603,9 +691,9 @@ local function DrawLoopEditor()
                 monitoring = 0
             end
 
-            if reaper.ImGui_RadioButton(ctx, "Monitoring ON", monitoring == 1) then monitoring = 1 end
-            reaper.ImGui_SameLine(ctx)
-            if reaper.ImGui_RadioButton(ctx, "Monitoring OFF", monitoring == 0) then monitoring = 0 end
+            if reaper.ImGui_Checkbox(ctx, "Monitoring", monitoring == 1) then
+                monitoring = (monitoring == 1) and 0 or 1
+            end
 
             if loop_type == "PLAY" then
                 local pitch_changed, new_pitch = reaper.ImGui_SliderInt(ctx, "Pitch", pitch, -24, 24)
@@ -617,23 +705,56 @@ local function DrawLoopEditor()
             reaper.ImGui_SameLine(ctx)
             if reaper.ImGui_RadioButton(ctx, "Stéréo", not is_mono) then is_mono = false end
 
-            local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Panoramique", pan, -1.0, 1.0, "%.2f")
+            local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Pan", pan, -1.0, 1.0, "%.2f")
             if pan_changed then pan = new_pan end
 
-            local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Volume (dB)", volume_db, -20.0, 10.0, "%.2f")
+            local vol_changed, new_vol = reaper.ImGui_SliderDouble(ctx, "Vol (dB)", volume_db, -20.0, 10.0, "%.2f")
             if vol_changed then volume_db = new_vol end
 
             monitoring = 1  -- Toujours ON pour MONITOR
-            reaper.ImGui_RadioButton(ctx, "Monitoring ON", true)
-            reaper.ImGui_SameLine(ctx)
-            if reaper.ImGui_RadioButton(ctx, "Monitoring OFF", false) then monitoring = 0 end
+            if reaper.ImGui_Checkbox(ctx, "Monitoring", true) then
+                monitoring = 0
+            end
 
         elseif loop_type == "UNUSED" then
             reaper.ImGui_Text(ctx, "Ce clip est marqué comme UNUSED.")
         end
 
+        -- Nouveaux faders de modulation
+        reaper.ImGui_Separator(ctx)
+        if reaper.ImGui_Button(ctx, "Afficher la modulation") then
+            show_modulation = not show_modulation
+        end
+        
+        if show_modulation then
+            -- Afficher les paramètres de modulation en une seule colonne
+            for i, param in ipairs(modulation_params) do
+                reaper.ImGui_Text(ctx, param.name)
+                reaper.ImGui_SameLine(ctx)
+                reaper.ImGui_PushItemWidth(ctx, 60)  -- Largeur fixe pour les DragInt
+                local changed_start, new_start = reaper.ImGui_DragInt(ctx, "Début##" .. i, param.start_value, 1, 0, 127, "%d")
+                if changed_start then param.start_value = new_start end
+                reaper.ImGui_PopItemWidth(ctx)
+                reaper.ImGui_SameLine(ctx)
+                reaper.ImGui_PushItemWidth(ctx, 60)  -- Largeur fixe pour les DragInt
+                local changed_end, new_end = reaper.ImGui_DragInt(ctx, "Fin##" .. i, param.end_value, 1, 0, 127, "%d")
+                if changed_end then param.end_value = new_end end
+                reaper.ImGui_PopItemWidth(ctx)
+            end
+        end
+
         -- Bouton Appliquer
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x127349FF )  -- Vert
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x1AA368FF)  -- Vert plus clair pour le hover
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0xF7E47EFF)  -- Vert encore plus clair pour le clic
+        
         if reaper.ImGui_Button(ctx, "Appliquer") then
+            if #selected_items > 1 and not all_same_track then
+                reaper.ShowMessageBox("Tous les blocs sélectionnés doivent être sur la même piste.", "Erreur", 0)
+                reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
+                return
+            end
+
             -- Si plusieurs items sont sélectionnés
             if #selected_items > 1 then
                 -- Vérifier que tous les items sont du même type
@@ -655,11 +776,13 @@ local function DrawLoopEditor()
 
                 if not all_same_type then
                     reaper.ShowMessageBox("Les items sélectionnés doivent être du même type.", "Erreur", 0)
+                    reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
                     return
                 end
 
                 if not all_valid_type then
                     reaper.ShowMessageBox("La modification en masse n'est autorisée que pour les types PLAY et MONITOR.", "Erreur", 0)
+                    reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
                     return
                 end
 
@@ -684,9 +807,22 @@ local function DrawLoopEditor()
                             SetTakeMetadata(take, "volume_db", tostring(volume_db))
                             SetTakeMetadata(take, "pitch", tostring(pitch))
                             SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                            -- Sauvegarder les valeurs des paramètres de modulation
+                            for i, param in ipairs(modulation_params) do
+                                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                            end
                             reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
                             reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.PLAY)
-                            ProcessMIDINotes()
+                            
+                            -- Pour le premier élément, obtenir les données MIDI
+                            if current_item_index == 1 then
+                                midi_data = ProcessMIDINotes(item_data.track, true)
+                            else
+                                -- Pour les éléments suivants, appliquer directement les modifications
+                                ApplyMIDIChanges(take, item, midi_data)
+                            end
+                            
                             UnfoldPlayLoop(take)
                         elseif item_type == "MONITOR" then
                             SetTakeMetadata(take, "loop_type", item_type)
@@ -694,8 +830,20 @@ local function DrawLoopEditor()
                             SetTakeMetadata(take, "volume_db", tostring(volume_db))
                             SetTakeMetadata(take, "is_mono", tostring(is_mono))
                             SetTakeMetadata(take, "monitoring", "1")  -- Toujours ON
+                            -- Sauvegarder les valeurs des paramètres de modulation
+                            for i, param in ipairs(modulation_params) do
+                                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                            end
                             reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.MONITOR)
-                            ProcessMIDINotes()
+                            
+                            -- Pour le premier élément, obtenir les données MIDI
+                            if current_item_index == 1 then
+                                midi_data = ProcessMIDINotes(item_data.track, true)
+                            else
+                                -- Pour les éléments suivants, appliquer directement les modifications
+                                ApplyMIDIChanges(take, item, midi_data)
+                            end
                         end
 
                         current_item_index = current_item_index + 1
@@ -704,11 +852,13 @@ local function DrawLoopEditor()
                         -- Traitement terminé - effacer le message et la liste
                         progress_message = ""
                         processing_items = {}
+                        midi_data = nil  -- Libérer les données MIDI
                     end
                 end
 
                 -- Démarrer le traitement
                 reaper.defer(processNextItem)
+                reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
                 return
             end
 
@@ -725,12 +875,18 @@ local function DrawLoopEditor()
                     SetTakeMetadata(take, "pan", tostring(pan))
                     SetTakeMetadata(take, "volume_db", tostring(volume_db))
                     SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                    -- Sauvegarder les valeurs des paramètres de modulation
+                    for i, param in ipairs(modulation_params) do
+                        SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                        SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                    end
                     reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", loop_name, true)
                     reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.RECORD)
                     if old_name ~= "" and old_name ~= loop_name then
                         UpdateDependentLoops(take, old_name, loop_name)
                     end
-                    ProcessMIDINotes()
+                    local track = reaper.GetMediaItemTake_Track(take)
+                    ProcessMIDINotes(track)
                 end
 
             elseif loop_type == "OVERDUB" then
@@ -740,9 +896,15 @@ local function DrawLoopEditor()
                 SetTakeMetadata(take, "volume_db", tostring(volume_db))
                 SetTakeMetadata(take, "is_mono", tostring(is_mono))
                 SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                -- Sauvegarder les valeurs des paramètres de modulation
+                for i, param in ipairs(modulation_params) do
+                    SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                    SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                end
                 reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.OVERDUB)
-                ProcessMIDINotes()
+                local track = reaper.GetMediaItemTake_Track(take)
+                ProcessMIDINotes(track)
 
             elseif loop_type == "PLAY" then
                 SetTakeMetadata(take, "loop_type", loop_type)
@@ -751,9 +913,15 @@ local function DrawLoopEditor()
                 SetTakeMetadata(take, "volume_db", tostring(volume_db))
                 SetTakeMetadata(take, "pitch", tostring(pitch))
                 SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                -- Sauvegarder les valeurs des paramètres de modulation
+                for i, param in ipairs(modulation_params) do
+                    SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                    SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                end
                 reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.PLAY)
-                ProcessMIDINotes()
+                local track = reaper.GetMediaItemTake_Track(take)
+                ProcessMIDINotes(track)
                 UnfoldPlayLoop(take)
 
             elseif loop_type == "MONITOR" then
@@ -762,8 +930,14 @@ local function DrawLoopEditor()
                 SetTakeMetadata(take, "volume_db", tostring(volume_db))
                 SetTakeMetadata(take, "is_mono", tostring(is_mono))
                 SetTakeMetadata(take, "monitoring", "1")  -- Toujours ON
+                -- Sauvegarder les valeurs des paramètres de modulation
+                for i, param in ipairs(modulation_params) do
+                    SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                    SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                end
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.MONITOR)
-                ProcessMIDINotes()
+                local track = reaper.GetMediaItemTake_Track(take)
+                ProcessMIDINotes(track)
 
             elseif loop_type == "UNUSED" then
                 SetTakeMetadata(take, "loop_type", "UNUSED")
@@ -773,9 +947,11 @@ local function DrawLoopEditor()
                 SetTakeMetadata(take, "pitch", "0")
                 reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "(Unused)", true)
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.UNUSED)
-                ProcessMIDINotes()
+                local track = reaper.GetMediaItemTake_Track(take)
+                ProcessMIDINotes(track)
             end
         end
+        reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs
 
         -- Afficher le message de progression s'il existe
         if progress_message ~= "" then
@@ -1090,72 +1266,46 @@ local function DrawDebug()
     end
 end
 
-local function DrawTitle()
-    -- Obtenir la position de lecture actuelle
-    local playPos = 0
-    local playState = reaper.GetPlayState()
+--------------------------------------------------------------------------------
+-- Fonction pour calculer la hauteur nécessaire
+--------------------------------------------------------------------------------
+local function calculateRequiredHeight()
+    local base_height = 15  -- Hauteur de base pour les éléments fixes
+    local item_height = 21   -- Hauteur approximative par élément
+    local content_height = base_height
     
-    if playState > 0 then
-        -- En lecture, on utilise la position de lecture
-        playPos = reaper.GetPlayPosition()
-    else
-        -- À l'arrêt, on utilise la position du curseur d'édition
-        playPos = reaper.GetCursorPosition()
-    end
-    
-    -- Vérifier si la position a changé depuis la dernière frame
-    local positionChanged = (playPos ~= last_cursor_pos)
-    last_cursor_pos = playPos
-    
-    -- Variables pour stocker les informations sur le dernier marqueur
-    local lastMarkerName = nil
-    local lastMarkerPos = -math.huge -- Commencer avec une valeur très négative
-    
-    -- Récupérer tous les marqueurs et trouver celui juste avant playPos
-    local markerCount = reaper.CountProjectMarkers(0)
-    for i = 0, markerCount - 1 do
-        local retval, isRegion, pos, rgnend, name, markrgnindexnumber = reaper.EnumProjectMarkers(i)
-        if retval and not isRegion then -- On ne veut que les marqueurs, pas les régions
-            if pos <= playPos and pos > lastMarkerPos then
-                lastMarkerName = name
-                lastMarkerPos = pos
-            end
+    -- Ajuster la hauteur en fonction du contenu
+    if current_take and reaper.TakeIsMIDI(current_take) then
+        local loop_type = loop_types[selected_loop_type_index + 1]
+        
+        -- Ajouter la hauteur pour les éléments communs
+        content_height = content_height + (3 * item_height)  -- Note MIDI, séparateur, nombre d'éléments
+        
+        -- Ajouter la hauteur selon le type de loop
+        if loop_type == "RECORD" then
+            content_height = content_height + (6 * item_height)  -- Type, Nom, Mono/Stereo, Pan, Vol, Monitoring
+        elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
+            content_height = content_height + (7 * item_height)  -- Type, Réf, Mono/Stereo, Pan, Vol, Monitoring, Pitch
+        elseif loop_type == "MONITOR" then
+            content_height = content_height + (5 * item_height)  -- Type, Mono/Stereo, Pan, Vol, Monitoring
         end
-    end
-    
-    -- Centrer le texte horizontalement et verticalement
-    local windowWidth = reaper.ImGui_GetWindowWidth(ctx)
-    local windowHeight = reaper.ImGui_GetWindowHeight(ctx)
-    
-    -- Définir la couleur rose clair
-    local roseColor = 0xFF21EAFF  -- Rose clair (format ABGR)
-    
-    -- Afficher le titre
-    if lastMarkerName and lastMarkerName ~= "" then
-        local uppercaseText = lastMarkerName:upper()
-        local textWidth = reaper.ImGui_CalcTextSize(ctx, uppercaseText)
-        local textHeight = reaper.ImGui_GetTextLineHeight(ctx)
         
-        local centerX = windowWidth * 0.5
-        local centerY = windowHeight * 0.5
+        -- Ajouter la hauteur pour la section modulation
+        content_height = content_height + (2 * item_height)  -- Séparateur et bouton Modulation
+        if show_modulation then
+            content_height = content_height + (#modulation_params * item_height)  -- Faders de modulation
+        end
         
-        reaper.ImGui_SetCursorPos(ctx, centerX - textWidth * 0.5, centerY - textHeight * 0.5)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), roseColor)
-        reaper.ImGui_Text(ctx, uppercaseText)
-        reaper.ImGui_PopStyleColor(ctx)
+        -- Ajouter la hauteur pour le bouton Appliquer et le message de progression
+        content_height = content_height + (2 * item_height)
     else
-        local text = "AUCUN MARQUEUR"
-        local textWidth = reaper.ImGui_CalcTextSize(ctx, text)
-        local textHeight = reaper.ImGui_GetTextLineHeight(ctx)
-        
-        local centerX = windowWidth * 0.5
-        local centerY = windowHeight * 0.5
-        
-        reaper.ImGui_SetCursorPos(ctx, centerX - textWidth * 0.5, centerY - textHeight * 0.5)
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x808080FF)
-        reaper.ImGui_Text(ctx, text)
-        reaper.ImGui_PopStyleColor(ctx)
+        -- Si aucun take n'est sélectionné
+        content_height = content_height + item_height
     end
+    
+    -- Ajouter une marge et s'assurer d'une hauteur minimale
+    return math.max(150, content_height)
+    
 end
 
 --------------------------------------------------------------------------------
@@ -1166,11 +1316,23 @@ local function DrawMainWindow()
     record_monitor_loops = get_record_monitor_loops_mode()
     playback_mode = get_playback_mode()
 
-    reaper.ImGui_SetNextWindowPos(ctx, 100, 50, reaper.ImGui_Cond_FirstUseEver())
-    reaper.ImGui_SetNextWindowSize(ctx, 700, 500, reaper.ImGui_Cond_FirstUseEver())
+    -- Calculer la nouvelle hauteur requise
+    local new_height = calculateRequiredHeight()
+    if new_height ~= window_height then
+        window_height = new_height
+        reaper.ImGui_SetNextWindowSize(ctx, window_width, window_height, reaper.ImGui_Cond_Always())
+    end
 
+    reaper.ImGui_SetNextWindowPos(ctx, 100, 50, reaper.ImGui_Cond_FirstUseEver())
+    
     local visible, open = reaper.ImGui_Begin(ctx, "PoulpyLoopy v" .. VERSION, true)
     if visible then
+        -- Sauvegarder la largeur de la fenêtre si elle a été redimensionnée
+        local current_width = reaper.ImGui_GetWindowWidth(ctx)
+        if current_width ~= window_width then
+            window_width = current_width
+            reaper.SetExtState("PoulpyLoopy", "window_width", tostring(window_width), true)
+        end
         if reaper.ImGui_BeginTabBar(ctx, "MainTabs") then
             -- Onglet "Loop Editor"
             if reaper.ImGui_BeginTabItem(ctx, "Loop Editor") then
@@ -1199,12 +1361,6 @@ local function DrawMainWindow()
             -- Onglet "Debug"
             if reaper.ImGui_BeginTabItem(ctx, "Debug") then
                 DrawDebug()
-                reaper.ImGui_EndTabItem(ctx)
-            end
-            
-            -- Onglet "Title"
-            if reaper.ImGui_BeginTabItem(ctx, "Title") then
-                DrawTitle()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
