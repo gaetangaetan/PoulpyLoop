@@ -21,7 +21,8 @@ local COLORS = {
     AUTOMATION = reaper.ColorToNative(128,128,128) + 0x1000000,
     CLICK_MUTED = reaper.ColorToNative(0,0,255) + 0x1000000,
     CLICK_ACTIVE = reaper.ColorToNative(255,192,203) + 0x1000000,
-    CLICK_NO_AUTO = reaper.ColorToNative(0,0,0) + 0x1000000
+    CLICK_NO_AUTO = reaper.ColorToNative(0,0,0) + 0x1000000,
+    CLICK = reaper.ColorToNative(136,39,255) + 0x1000000
 }
 
 local LOOP_TYPES = {"RECORD", "OVERDUB", "PLAY", "MONITOR", "UNUSED"}

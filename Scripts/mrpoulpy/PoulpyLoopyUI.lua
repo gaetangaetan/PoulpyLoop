@@ -448,6 +448,15 @@ local function ProcessMIDINotes(track, return_data)
             local cc09 = math.floor(64 + pitch_val + 0.5)
             local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
             
+            -- Ajouter les CC pour la durée du bloc si c'est un bloc RECORD ou MONITOR
+            if loop_type == "RECORD" or loop_type == "MONITOR" then
+                local block_length = math.floor(item_length * 10) -- Convertir en dixièmes de secondes
+                local cc19_val = math.floor(block_length / 128)
+                local cc20_val = block_length % 128
+                reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 19, cc19_val, false)
+                reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 20, cc20_val, false)
+            end
+            
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
@@ -547,8 +556,10 @@ end
 local function DrawLoopEditor()
     local item = reaper.GetSelectedMediaItem(0, 0)
     local take = item and reaper.GetActiveTake(item)
+    local is_midi = take and reaper.TakeIsMIDI(take)
     
-    if take and reaper.TakeIsMIDI(take) then
+    -- N'afficher l'éditeur que si on a un item MIDI
+    if is_midi then
         if take ~= current_take then
             UpdateTakeData(take)
         end
@@ -953,11 +964,43 @@ local function DrawLoopEditor()
         end
         reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs
 
+        -- Bouton "Insérer clic" à droite du bouton "Appliquer"
+        reaper.ImGui_SameLine(ctx)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0xAB47BCFF)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x00AA40FF)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x008000FF)
+        
+        if reaper.ImGui_Button(ctx, "Insérer clic") then
+            if item and take and is_midi then
+                -- Set loop points to items
+                reaper.Main_OnCommand(41039, 0)
+                
+                -- Supprimer l'item MIDI qui a servi à définir les points de loop
+                local track = reaper.GetMediaItem_Track(item)
+                reaper.DeleteTrackMediaItem(track, item)
+                
+                -- Insert click source
+                reaper.Main_OnCommand(40013, 0)
+                
+                -- Colorer le nouvel item de clic
+                local new_item = reaper.GetSelectedMediaItem(0, 0)
+                if new_item then
+                    reaper.SetMediaItemInfo_Value(new_item, "I_CUSTOMCOLOR", COLORS.CLICK)
+                end
+                
+                -- Forcer la mise à jour des variables
+                item = nil
+                take = nil
+                is_midi = false
+            end
+        end
+        
+        reaper.ImGui_PopStyleColor(ctx, 3)
+
         -- Afficher le message de progression s'il existe
         if progress_message ~= "" then
             reaper.ImGui_Text(ctx, progress_message)
         end
-
     else
         reaper.ImGui_Text(ctx, "Aucun item MIDI sélectionné.")
     end
@@ -1068,7 +1111,17 @@ local function DrawOptions()
             reaper.ImGui_TableNextColumn(ctx)
             local monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + i) == 1
             if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. i, monitoring_stop) then
-                reaper.gmem_write(GMEM.MONITORING_STOP_BASE + i, monitoring_stop and 0 or 1)
+                -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
+                local fx_count = reaper.TrackFX_GetCount(track)
+                for j = 0, fx_count - 1 do
+                    local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+                    if fx_name:find("PoulpyLoop") then
+                        -- Au lieu d'écrire directement dans gmem, on va modifier le paramètre du plugin
+                        -- qui s'occupera lui-même de mettre à jour gmem
+                        local new_value = monitoring_stop and 0 or 1
+                        reaper.TrackFX_SetParam(track, j, 2, new_value) -- slider3 est le paramètre d'index 2
+                    end
+                end
             end
             
             if reaper.ImGui_IsItemHovered(ctx) then
@@ -1270,12 +1323,12 @@ end
 -- Fonction pour calculer la hauteur nécessaire
 --------------------------------------------------------------------------------
 local function calculateRequiredHeight()
-    local base_height = 15  -- Hauteur de base pour les éléments fixes
-    local item_height = 21   -- Hauteur approximative par élément
+    local base_height = 18  -- Hauteur de base pour les éléments fixes
+    local item_height = 22   -- Hauteur approximative par élément
     local content_height = base_height
     
-    -- Ajuster la hauteur en fonction du contenu
-    if current_take and reaper.TakeIsMIDI(current_take) then
+    -- Vérifier si la take existe toujours et est valide
+    if current_take and reaper.ValidatePtr2(0, current_take, "MediaItem_Take*") and reaper.TakeIsMIDI(current_take) then
         local loop_type = loop_types[selected_loop_type_index + 1]
         
         -- Ajouter la hauteur pour les éléments communs
@@ -1304,7 +1357,7 @@ local function calculateRequiredHeight()
     end
     
     -- Ajouter une marge et s'assurer d'une hauteur minimale
-    return math.max(150, content_height)
+    return math.max(270, content_height)
     
 end
 

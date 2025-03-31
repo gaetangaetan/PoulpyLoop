@@ -40,9 +40,12 @@ is_playing    = units_count   + NUM_NOTES;
 is_recording  = is_playing    + NUM_NOTES;
 read_pos      = is_recording  + NUM_NOTES;
 rec_mode      = read_pos      + NUM_NOTES;
-next_free_unit = rec_mode  + NUM_NOTES;
-modulation_values = next_free_unit + NUM_NOTES; // Espace pour 20 valeurs (10 paires)
-the_memory    = modulation_values + 20; // Décaler the_memory pour réserver l'espace de modulation
+next_free_unit = rec_mode     + NUM_NOTES;
+modulation_values = next_free_unit + NUM_NOTES;
+the_memory    = modulation_values + 20;
+
+// Variable unique pour la longueur temporaire
+temp_block_length = 0;
 
 i = 0;
 loop(NUM_NOTES,
@@ -53,6 +56,7 @@ loop(NUM_NOTES,
   is_recording[i] = 0;
   read_pos[i] = 0;
   rec_mode[i] = 0;
+  block_length[i] = 0; // Initialisation de block_length
   i += 1;
 );
 next_free_unit[0] = 0;
@@ -272,26 +276,62 @@ gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 // Synchroniser le slider avec gmem
 slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
+// Debug: afficher les valeurs importantes
+sprintf(debug_str2, "");
+
 // Mise à jour des sliders de modulation
 i = 0;
 loop(NUM_NOTES,
-  (loop_type[i] >= 0 && is_playing[i] && note_length[i] > 0) ? (
-    // Calculer le pourcentage de progression dans la loop
-    progress = read_pos[i] / note_length[i];
+  (loop_type[i] >= 0) ? (
+    // Debug pour les blocs MONITOR
+    (loop_type[i] == 3) ? (
+      sprintf(debug_str2, "MONITOR - Note %d:\n", i);
+      sprintf(debug_str2, "%stype=%d, is_playing=%d, is_recording=%d\n", 
+        debug_str2, loop_type[i], is_playing[i], is_recording[i]);
+      sprintf(debug_str2, "%spos=%.1f, temp_length=%.1f\n", 
+        debug_str2, read_pos[i] / srate * 10, temp_block_length);
+    );
     
-    // Pour chaque paramètre de modulation
-    j = 0;
-    loop(MODULATION_COUNT,
-      start_val = get_modulation_start(j);
-      end_val = get_modulation_end(j);
+    // Calculer le pourcentage de progression dans la loop
+    progress = 0;
+    
+    // Utiliser temp_block_length pour RECORD et MONITOR
+    ((is_recording[i] || loop_type[i] == 3) && temp_block_length > 0) ? (
+      progress = (read_pos[i] / srate * 10) / temp_block_length;
+      progress = min(progress, 1); // S'assurer que progress ne dépasse pas 1
       
-      // Interpolation linéaire
-      current_val = start_val + (end_val - start_val) * progress;
-      
-      // Mise à jour du slider correspondant
-      slider(j + 4) = current_val;
-      
-      j += 1;
+      // Debug pour les blocs MONITOR
+      (loop_type[i] == 3) ? (
+        sprintf(debug_str2, "%sprogress=%.3f\n", debug_str2, progress);
+      );
+    ) : (
+      // Pour les autres blocs, utiliser note_length
+      (note_length[i] > 0) ? (
+        progress = read_pos[i] / note_length[i];
+      );
+    );
+    
+    // Si on a une progression valide, mettre à jour les sliders
+    (progress > 0) ? (
+      j = 0;
+      loop(MODULATION_COUNT,
+        start_val = get_modulation_start(j);
+        end_val = get_modulation_end(j);
+        
+        // Interpolation linéaire
+        current_val = start_val + (end_val - start_val) * progress;
+        
+        // Debug pour les blocs MONITOR (premier paramètre seulement)
+        (loop_type[i] == 3 && j == 0) ? (
+          sprintf(debug_str2, "%sMod 1: %.1f -> %.1f (current=%.1f)", 
+            debug_str2, start_val, end_val, current_val);
+        );
+        
+        // Mise à jour du slider correspondant
+        slider(j + 4) = current_val;
+        
+        j += 1;
+      );
     );
   );
   i += 1;
@@ -337,19 +377,18 @@ while (
       (idx >= 0) ? (
         (msg2 == 7) ? (
             volumeFactor = cc7ToGain(msg3);
-            //sprintf(current_display, "CC7 => volume=%.2f", volumeFactor);
         ) : (msg2 == 9) ? (
-            // CC09 : pitch = valeur - 64
             slider2 = msg3 - 64;
-            //sprintf(current_display, "CC9 => pitch=%d", slider2);
         ) : (msg2 == 10) ? (
             panFactor = cc10ToPan(msg3);
-            //sprintf(current_display, "CC10 => pan=%.2f", panFactor);
         ) : (msg2 == 8) ?(
             mode = msg3;
         ) : (msg2 == 11) ? (
             monitoring = msg3 > 0 ? 1 : 0;
-            //sprintf(current_display, "CC11 => monitoring=%s", monitoring ? "ON" : "OFF");
+        ) : (msg2 == 19) ? (
+            temp_block_length = msg3 * 128;
+        ) : (msg2 == 20) ? (
+            temp_block_length += msg3;
         ) : (msg2 >= 21 && msg2 <= 40) ? (
             // Traitement des CC 21-40 pour les valeurs de modulation
             mod_index = floor((msg2 - 21) / 2);
@@ -359,19 +398,26 @@ while (
             ) : (
                 set_modulation_end(mod_index, msg3);
             );
-            //sprintf(current_display, "Mod %d %s: %.2f", mod_index + 1, is_end ? "fin" : "début", msg3);
         );
       );
     );
 
     (status == $x90 && vel > 0) ? (  // Note ON
       (idx >= 0) ? (
+        // Pour les blocs RECORD ou MONITOR, afficher la longueur attendue
+        ((vel == 1 || vel == 4) && temp_block_length > 0) ? (
+          sprintf(debug_str2, "Longueur attendue: %.1f dixièmes de seconde", temp_block_length);
+        );
+
+        // Debug: afficher le type de note reçue
+        sprintf(debug_str2, "%s\nNote ON: idx=%d, vel=%d", debug_str2, idx, vel);
+        
         // Stocker la position de début de la note dans gmem
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
         gmem[note_pos_index] = play_position + offset / srate;
         
         // Afficher les valeurs de modulation pour cette note
-        sprintf(debug_str, "\n\nModulations pour note %d:", note);
+        sprintf(debug_str, "\n\nModulations pour note %d:", idx);
         i = 0;
         loop(MODULATION_COUNT,
           start_val = get_modulation_start(i);
@@ -463,23 +509,19 @@ while (
               read_pos[idx] = 0;
               is_recording[idx] = 0; // Pas d'enregistrement en mode PLAYBACK
               loop_type[idx] = 3; // Garder le type MONITOR
-              sprintf(current_display, "Playback: lecture MONITOR note=%d", note);
-            ) : (
-              sprintf(current_display, "Playback: pas de contenu pour MONITOR note=%d", note);
+              sprintf(debug_str2, "%s\nMONITOR: playback mode", debug_str2);
             );
           ) : (
             // En mode LIVE, comportement normal
             is_playing[idx] = 1;
             loop_type[idx] = 3;
+            sprintf(debug_str2, "%s\nMONITOR: live mode, type=%d", debug_str2, loop_type[idx]);
             
             // Vérifier si on doit enregistrer les loops MONITOR
             record_monitor_mode = get_record_monitor_loops_mode();
             (record_monitor_mode == 1) ? (
               // Si le mode est activé, on enregistre comme pour RECORD
               startRecording(idx, mode);
-              sprintf(current_display, "Monitor+Rec note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
-            ) : (
-              sprintf(current_display, "Monitor note=%d vel=%d", note, vel);
             );
           );
         )
@@ -558,23 +600,24 @@ loop(NUM_NOTES,
     unitCount = units_count[i];
     capacity = unitCount * UNIT_SIZE;
     
-    // Incrémenter normalement et boucler
-    (is_playing[i] && curLen > 0) ? (
+    // Incrémenter read_pos pour la lecture, l'enregistrement et les blocs MONITOR
+    ((is_playing[i] || is_recording[i] || loop_type[i] == 3) && (curLen > 0 || is_recording[i] || loop_type[i] == 3)) ? (
       read_pos[i] += 1;
-      (read_pos[i] >= curLen) ? read_pos[i] = 0;
+      // Pour les blocs MONITOR, on boucle sur temp_block_length
+      (loop_type[i] == 3 && temp_block_length > 0) ? (
+        (read_pos[i] >= temp_block_length * srate / 10) ? read_pos[i] = 0;
+      ) : (
+        // Pour les autres blocs, on boucle sur note_length
+        (read_pos[i] >= curLen && !is_recording[i]) ? read_pos[i] = 0;
+      );
       pos = read_pos[i];
       
       // Calculer la position de lecture effective avec l'offset
       effective_pos = offset_position > 0 ? 
         floor((pos + floor(offset_position * srate)) % curLen) : 
         pos;
-      
-      // Debug pour première piste
-      (i == 0) ? (
-        sprintf(debug_str2, "Lecture: pos=%d/%d (offset=%.3f)", effective_pos, curLen, offset_position);
-      );
     ) : (
-      // Si pas en lecture, maintenir la position actuelle
+      // Si pas en lecture/enregistrement, maintenir la position actuelle
       pos = read_pos[i];
       effective_pos = pos;
     );
@@ -704,81 +747,20 @@ gfx_x += 200;
   gfx_drawstr("ARRÊTÉ");
 );
 
-// Afficher les autres informations
-gfx_x = 10;
-gfx_y = 50;
-gfx_set(1, 1, 1, 1);
-gfx_drawstr(debug_str);  // Afficher les valeurs de modulation de la dernière note
-
-gfx_x = 10;
-gfx_y = 60;
-gfx_drawstr(time_left_str);
-
-// Afficher les valeurs de modulation
-gfx_x = 10;
-gfx_y = 140;
-gfx_set(1, 1, 1, 1);
-
-/*
-gfx_drawstr("Valeurs de modulation:");
-i = 0;
-loop(MODULATION_COUNT,
-  gfx_x = 10;
-  gfx_y += 20;
-  start_val = get_modulation_start(i);
-  end_val = get_modulation_end(i);
-  sprintf(debug_str2, "Mod %2d: %.2f -> %.2f", i+1, start_val, end_val);
-  gfx_drawstr(debug_str2);
-  i += 1;
-);
-*/
-
-  //gfx_x = 10;
-  //gfx_y = 160;
-  //gfx_set(1, 1, 1, 1);
-  
-/*  i = 0;
-  loop(20,
-    gfx_x = 10;
-    gfx_y += 20;
-  start_val = modulation_values[i];
-    
-    sprintf(debug_str2, "Mod %2d: %.2f", i, start_val);
-    gfx_drawstr(debug_str2);
-    i += 1;
-  );
-  */
-  /*
-i = 0;
-loop(20,
-  start_val = modulation_values[i];
-  //start_val = modulation_values(i);
-  //end_val = get_modulation_end(i+1);
-  sprintf(debug_str2, "\nmodval %2d: %.2f", i, start_val); 
-  gfx_drawstr(debug_str2);
-  i += 1;
-);
-*/
-
-//gfx_drawstr(debug_str2);
 // Afficher le mode actuel
-
 playback_mode = get_playback_mode();
 gfx_x = 10;
-gfx_y = 90;
-(playback_mode == 1) ? (
-  gfx_set(1, 0.5, 0.5, 1); // Rouge pour PLAYBACK
-  gfx_drawstr("Mode: PLAYBACK");
-) : (
-  gfx_set(0.5, 1, 0.5, 1); // Vert pour LIVE
-  gfx_drawstr("Mode: LIVE");
-);
+gfx_y = 50;
+gfx_set(0.5, 1, 0.5, 1); // Vert pour LIVE
+gfx_drawstr("Mode: LIVE");
 
-
-/*
-// Afficher l'état de la synchronisation détaillé
+// Afficher la longueur attendue si présente
 gfx_x = 10;
-gfx_y = 120;
-gfx_set(1, 1, 1, 1); // Blanc
+gfx_y = 90;
+gfx_set(1, 1, 1, 1);
 gfx_drawstr(debug_str2);
-*/
+
+// Afficher le temps restant
+gfx_x = 10;
+gfx_y = 130;
+gfx_drawstr(time_left_str);
