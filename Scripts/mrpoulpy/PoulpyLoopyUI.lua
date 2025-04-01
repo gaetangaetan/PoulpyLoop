@@ -23,6 +23,19 @@ local COLORS = core.COLORS
 local LOOP_TYPES = core.LOOP_TYPES
 local VERSION = core.VERSION
 local GMEM = core.GMEM
+-- Ajouter les nouvelles variables GMEM pour la sauvegarde/chargement audio
+GMEM.SAVE_LOAD_SAMPLES = 16200  -- 0=normal, 1=sauvegarde, 2=chargement
+GMEM.INSTANCE_ID = 16201        -- Instance en cours de traitement
+GMEM.JOB_ADDRESS = 16202        -- Adresse de début dans gmem
+GMEM.JOB_DONE = 16203          -- 0=en cours, 1=terminé
+GMEM.JOB_LENGTH = 16204        -- Taille des données écrites
+GMEM.MAX_MEMORY = 32000000     -- Taille maximale de la mémoire en doubles
+
+-- Constantes pour les dimensions des fenêtres
+local DEFAULT_WINDOW_HEIGHT = 500  -- Hauteur par défaut de la fenêtre principale
+local DEFAULT_WINDOW_WIDTH = 700   -- Largeur par défaut de la fenêtre principale
+local TOOLS_TAB_HEIGHT = 460      -- Hauteur par défaut de l'onglet Tools
+
 local GetTakeMetadata = core.GetTakeMetadata
 local SetTakeMetadata = core.SetTakeMetadata
 local IsLoopNameValid = core.IsLoopNameValid
@@ -65,8 +78,8 @@ local title_font = nil
 local progress_message = ""
 local processing_items = {}
 local show_modulation = false
-local window_height = 500  -- Nouvelle variable pour la hauteur de la fenêtre
-local window_width = 700   -- Nouvelle variable pour la largeur de la fenêtre
+local window_height = DEFAULT_WINDOW_HEIGHT  -- Nouvelle variable pour la hauteur de la fenêtre
+local window_width = DEFAULT_WINDOW_WIDTH   -- Nouvelle variable pour la largeur de la fenêtre
 local render_realtime = true  -- true = realtime (idle), false = full speed
 
 -- Nouveaux paramètres de modulation
@@ -103,6 +116,9 @@ local errorMessage = ""
 
 -- Préparation des variables pour les sélections multiples
 local midi_data = nil  -- Pour stocker les données MIDI entre les appels
+
+-- Variable pour suivre l'onglet actif
+local current_tab = "Loop Editor"
 
 --------------------------------------------------------------------------------
 -- Fonctions locales
@@ -1112,32 +1128,32 @@ local function DrawOptions()
 
     -- Afficher uniquement les pistes avec PoulpyLoop
     for _, track_info in ipairs(poulpy_tracks) do
-        reaper.ImGui_TableNextRow(ctx)
-        
-        -- Nom de la piste
-        reaper.ImGui_TableNextColumn(ctx)
+            reaper.ImGui_TableNextRow(ctx)
+            
+            -- Nom de la piste
+            reaper.ImGui_TableNextColumn(ctx)
         local _, track_name = reaper.GetTrackName(track_info.track)
-        reaper.ImGui_Text(ctx, track_name)
+            reaper.ImGui_Text(ctx, track_name)
 
-        -- Case à cocher pour le monitoring à l'arrêt
-        reaper.ImGui_TableNextColumn(ctx)
+            -- Case à cocher pour le monitoring à l'arrêt
+            reaper.ImGui_TableNextColumn(ctx)
         local monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + track_info.monitoring_index) == 1
         if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. track_info.track_index, monitoring_stop) then
-            -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
+                -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
             local fx_count = reaper.TrackFX_GetCount(track_info.track)
-            for j = 0, fx_count - 1 do
+                for j = 0, fx_count - 1 do
                 local retval, fx_name = reaper.TrackFX_GetFXName(track_info.track, j, "")
-                if fx_name:find("PoulpyLoop") then
-                    -- Au lieu d'écrire directement dans gmem, on va modifier le paramètre du plugin
-                    -- qui s'occupera lui-même de mettre à jour gmem
-                    local new_value = monitoring_stop and 0 or 1
+                    if fx_name:find("PoulpyLoop") then
+                        -- Au lieu d'écrire directement dans gmem, on va modifier le paramètre du plugin
+                        -- qui s'occupera lui-même de mettre à jour gmem
+                        local new_value = monitoring_stop and 0 or 1
                     reaper.TrackFX_SetParam(track_info.track, j, 2, new_value) -- slider3 est le paramètre d'index 2
+                    end
                 end
             end
-        end
-        
-        if reaper.ImGui_IsItemHovered(ctx) then
-            reaper.ImGui_SetTooltip(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt.")
+            
+            if reaper.ImGui_IsItemHovered(ctx) then
+                reaper.ImGui_SetTooltip(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt.")
         end
     end
 
@@ -1469,7 +1485,11 @@ local function SaveAudioToFile()
     end
     
     -- Ouvrir la boîte de dialogue de sélection de fichier
-    local retval, filename = reaper.JS_Dialog_BrowseForSaveFile("Sauvegarder l'audio PoulpyLoop", reaper.GetProjectPath(), "save.pla", "PoulpyLoop Audio (*.pla)\0*.pla\0", ".pla")
+    local retval, filename = reaper.JS_Dialog_BrowseForSaveFile("Sauvegarder l'audio PoulpyLoop", 
+    reaper.GetProjectPath(), 
+    "save.pla", 
+    "PoulpyLoop Audio (*.pla)\0*.pla\0", 
+    ".pla")
     if not retval then return end
     
     -- Ajouter l'extension .pla si elle n'est pas présente
@@ -1481,10 +1501,16 @@ local function SaveAudioToFile()
     local log_filename = filename .. ".log"
     local log_file = io.open(log_filename, "w")
     
+    if log_file then
+        log_file:write("Démarrage de la sauvegarde...\n")
+        log_file:write(string.format("Fichier cible: %s\n\n", filename))
+    end
+    
     -- Ouvrir le fichier en écriture binaire
     local file = io.open(filename, "wb")
     if not file then
         reaper.MB("Impossible d'ouvrir le fichier en écriture.", "Erreur", 0)
+        if log_file then log_file:close() end
         return
     end
     
@@ -1498,17 +1524,30 @@ local function SaveAudioToFile()
     for instance_id = 0, 63 do
         local stats_base = GMEM.STATS_BASE + instance_id * 3
         local memory_used = reaper.gmem_read(stats_base)
-        if memory_used > 0 then
+        local notes_count = reaper.gmem_read(stats_base + 2)
+        
+        if memory_used > 0 and notes_count > 0 then
             table.insert(active_instances, instance_id)
             if log_file then
-                log_file:write(string.format("Instance %d trouvée : Mémoire=%f, Temps=%f, Notes=%d\n", 
+                log_file:write(string.format("Instance %d trouvée : Mémoire=%.2f MB, Temps=%.2f s, Notes=%d\n", 
                     instance_id,
                     memory_used,
                     reaper.gmem_read(stats_base + 1),
-                    reaper.gmem_read(stats_base + 2)
+                    notes_count
                 ))
             end
         end
+    end
+    
+    -- Vérifier s'il y a des instances actives
+    if #active_instances == 0 then
+        reaper.MB("Aucune instance active trouvée. Rien à sauvegarder.", "Information", 0)
+        file:close()
+        if log_file then
+            log_file:write("Aucune instance active trouvée. Sauvegarde annulée.\n")
+            log_file:close()
+        end
+        return
     end
     
     -- Écrire le nombre d'instances actives
@@ -1536,63 +1575,73 @@ local function SaveAudioToFile()
         
         -- Traiter l'instance actuelle
         local instance_id = active_instances[processed_instances + 1]
-        local stats_base = GMEM.STATS_BASE + instance_id * 3
         
-        if log_file then
-            log_file:write(string.format("\nTraitement de l'instance %d :\n", instance_id))
-        end
+        -- Configurer les variables gmem pour la sauvegarde
+        reaper.gmem_write(GMEM.SAVE_LOAD_SAMPLES, 1)  -- Mode sauvegarde
+        reaper.gmem_write(GMEM.INSTANCE_ID, instance_id)
+        reaper.gmem_write(GMEM.JOB_ADDRESS, math.floor(GMEM.MAX_MEMORY))  -- S'assurer que c'est un entier
+        reaper.gmem_write(GMEM.JOB_DONE, 0)
         
-        -- Écrire l'ID de l'instance
-        file:write(string.pack("B", instance_id))
-        
-        -- Écrire les statistiques de l'instance
-        local memory_used = reaper.gmem_read(stats_base)
-        local time_left = reaper.gmem_read(stats_base + 1)
-        local notes_active = reaper.gmem_read(stats_base + 2)
-        
-        file:write(string.pack("d", memory_used))
-        file:write(string.pack("d", time_left))
-        file:write(string.pack("i", notes_active))
-        
-        if log_file then
-            log_file:write(string.format("  Mémoire utilisée : %f\n", memory_used))
-            log_file:write(string.format("  Temps restant : %f\n", time_left))
-            log_file:write(string.format("  Notes actives : %d\n", notes_active))
-            log_file:write("  Notes trouvées :\n")
-        end
-        
-        -- Pour chaque note possible
-        local notes_found = 0
-        for note = 0, 127 do
-            local note_pos = reaper.gmem_read(GMEM.NOTE_START_POS_BASE + instance_id * 128 + note)
-            local loop_length = reaper.gmem_read(GMEM.LOOP_LENGTH_BASE + instance_id * 128 + note)
-            
-            if loop_length > 0 then
-                file:write(string.pack("B", note))
-                file:write(string.pack("d", note_pos))
-                file:write(string.pack("d", loop_length))
-                notes_found = notes_found + 1
+        -- Attendre que l'instance ait terminé
+        local function WaitForInstance()
+            if reaper.gmem_read(GMEM.JOB_DONE) == 1 then
+                -- L'instance a terminé, lire les données
+                local job_length = reaper.gmem_read(GMEM.JOB_LENGTH)
+                local job_address = reaper.gmem_read(GMEM.JOB_ADDRESS)
                 
-                if log_file then
-                    log_file:write(string.format("    Note %d : Position=%f, Longueur=%f\n", 
-                        note, note_pos, loop_length))
+                -- Vérifier que les valeurs sont valides
+                if job_length and job_length > 0 and job_address and job_address > 0 then
+                    -- Écrire l'ID de l'instance
+                    file:write(string.pack("B", instance_id))
+                    
+                    -- Écrire la taille des données
+                    file:write(string.pack("i", job_length))
+                    
+                    -- Écrire les données
+                    local valid_values = 0
+                    local invalid_values = 0
+                    
+                    for i = 0, job_length - 1 do
+                        local value = reaper.gmem_read(job_address + i)
+                        if value and not (value ~= value) then  -- Vérifier que ce n'est pas NaN
+                            file:write(string.pack("d", value))
+                            valid_values = valid_values + 1
+                        else
+                            -- Écrire un zéro à la place des valeurs invalides
+                            file:write(string.pack("d", 0.0))
+                            invalid_values = invalid_values + 1
+                            
+                            if log_file and invalid_values <= 10 then -- Limiter le nombre de messages d'erreur
+                                log_file:write(string.format("  ATTENTION: Valeur invalide à l'index %d, remplacée par 0.0\n", i))
+                            end
+                        end
+                    end
+                    
+                    if log_file then
+                        if invalid_values > 10 then
+                            log_file:write(string.format("  ATTENTION: %d autres valeurs invalides ont été remplacées par 0.0\n", invalid_values - 10))
+                        end
+                        log_file:write(string.format("\nInstance %d sauvegardée : %d doubles (dont %d valides et %d invalides)\n", 
+                            instance_id, job_length, valid_values, invalid_values))
+                    end
+                else
+                    if log_file then
+                        log_file:write(string.format("\nATTENTION: Données invalides pour l'instance %d\n", instance_id))
+                    end
                 end
+                
+                -- Passer à l'instance suivante
+                processed_instances = processed_instances + 1
+                progress_message = string.format("Sauvegarde en cours... (%d/%d instances)", processed_instances, total_instances)
+                reaper.defer(ProcessNextInstance)
+            else
+                -- Continuer à attendre
+                reaper.defer(WaitForInstance)
             end
         end
         
-        if log_file then
-            log_file:write(string.format("  Total des notes trouvées : %d\n", notes_found))
-        end
-        
-        -- Marquer la fin des notes pour cette instance
-        file:write(string.pack("B", 255))
-        
-        -- Mettre à jour le compteur et le message
-        processed_instances = processed_instances + 1
-        progress_message = string.format("Sauvegarde en cours... (%d/%d instances)", processed_instances, total_instances)
-        
-        -- Programmer le traitement de la prochaine instance
-        reaper.defer(ProcessNextInstance)
+        -- Démarrer l'attente
+        WaitForInstance()
     end
     
     -- Démarrer le traitement
@@ -1602,122 +1651,126 @@ end
 
 -- Fonction pour charger l'audio depuis un fichier
 local function LoadAudioFromFile()
-    -- Vérifier que l'extension JS est chargée
     if not reaper.JS_Dialog_BrowseForOpenFiles then
-        reaper.MB("L'extension JS_ReaScript est requise. Veuillez l'installer via ReaPack.", "Erreur", 0)
+        reaper.ShowMessageBox("L'extension JS n'est pas installée. Veuillez l'installer pour utiliser cette fonctionnalité.", "Erreur", 0)
         return
     end
+
+    -- Obtenir le chemin du projet actuel
+    local project_path = reaper.GetProjectPath("")
+    local media_path = project_path .. "/Media"
     
-    -- Ouvrir la boîte de dialogue de sélection de fichier
-    local retval, filename = reaper.JS_Dialog_BrowseForOpenFiles("Charger l'audio PoulpyLoop", reaper.GetProjectPath(), "", "PoulpyLoop Audio (*.pla)\0*.pla\0", ".pla")
-    if not retval then return end
-    
-    -- Créer un fichier de log à côté du fichier de chargement
-    local log_filename = filename .. ".load.log"
-    local log_file = io.open(log_filename, "w")
-    
-    -- Ouvrir le fichier en lecture binaire
-    local file = io.open(filename, "rb")
-    if not file then
-        reaper.MB("Impossible d'ouvrir le fichier en lecture.", "Erreur", 0)
-        return
+    -- Créer le dossier Media s'il n'existe pas
+    if not reaper.file_exists(media_path) then
+        reaper.RecursiveCreateDirectory(media_path, 0)
     end
+
+    local retval, file_path = reaper.JS_Dialog_BrowseForOpenFiles(
+        "Charger un fichier audio",  -- titre
+        project_path,                -- dossier initial
+        "", -- 
+        "PoulpyLoop Audio (*.pla)\0*.pla\0\0",  -- filtres
+        0                           -- sélection multiple (0 = non)
+    )
     
-    -- Vérifier l'en-tête
-    local header = file:read(4)
-    if header ~= "PLA1" then
-        reaper.MB("Format de fichier invalide.", "Erreur", 0)
-        file:close()
-        return
-    end
-    
-    if log_file then
-        log_file:write("En-tête PLA1 vérifié avec succès\n\n")
-    end
-    
-    -- Lire le nombre d'instances
-    local num_instances = string.unpack("B", file:read(1))
-    
-    if log_file then
-        log_file:write(string.format("Nombre d'instances à charger : %d\n\n", num_instances))
-    end
-    
-    -- Variables pour le suivi de la progression
-    local processed_instances = 0
-    
-    -- Fonction pour traiter la prochaine instance
-    local function ProcessNextInstance()
-        if processed_instances >= num_instances then
-            -- Traitement terminé
-            file:close()
-            if log_file then
-                log_file:write("\nChargement terminé avec succès!")
+    if retval and file_path then
+        -- Créer un fichier de log à côté du fichier audio
+        local log_path = file_path:gsub("%.pla$", "_load.log")
+        local log_file = io.open(log_path, "w")
+        
+        if log_file then
+            log_file:write("Démarrage du chargement...\n")
+            log_file:write(string.format("Fichier source: %s\n\n", file_path))
+            
+            -- Ouvrir le fichier audio
+            local file = io.open(file_path, "rb")
+            if file then
+                -- Lire l'en-tête du fichier
+                local header = file:read(4)
+                if header == "PLA1" then
+                    -- Lire le nombre d'instances
+                    local num_instances = string.unpack("B", file:read(1))
+                    log_file:write(string.format("Nombre d'instances à charger: %d\n", num_instances))
+                    
+                    -- Traiter chaque instance
+                    for i = 1, num_instances do
+                        -- Lire l'ID de l'instance
+                        local instance_id = string.unpack("B", file:read(1))
+                        -- Lire la taille des données en doubles
+                        local data_size = string.unpack("i", file:read(4))
+                        
+                        log_file:write(string.format("\nInstance %d (ID: %d):\n", i, instance_id))
+                        log_file:write(string.format("Taille des données: %d doubles\n", data_size))
+                        
+                        -- Lire toutes les données
+                        local data = {}
+                        for j = 1, data_size do
+                            local value = string.unpack("d", file:read(8))
+                            if not (value ~= value) then -- Vérifier que ce n'est pas NaN
+                                table.insert(data, value)
+                            end
+                        end
+                        
+                        log_file:write(string.format("Données lues: %d valeurs\n", #data))
+                        
+                        -- Passer les données au plugin via gmem
+                        local job_address = math.floor(GMEM.MAX_MEMORY)
+                        reaper.gmem_write(GMEM.JOB_ADDRESS, job_address)
+                        
+                        -- Écrire toutes les données dans gmem
+                        for j, value in ipairs(data) do
+                            reaper.gmem_write(job_address + j - 1, value)
+                        end
+                        
+                        -- Configurer le chargement
+                        reaper.gmem_write(GMEM.SAVE_LOAD_SAMPLES, 2) -- Mode chargement
+                        reaper.gmem_write(GMEM.INSTANCE_ID, instance_id)
+                        reaper.gmem_write(GMEM.JOB_DONE, 0)
+                        reaper.gmem_write(GMEM.JOB_LENGTH, #data)
+                        
+                        -- Message de progression
+                        progress_message = string.format("Chargement de l'instance %d/%d...", i, num_instances)
+                        
+                        -- Attendre que le plugin termine le chargement
+                        local start_time = os.time()
+                        local timeout = false
+                        
+                        while reaper.gmem_read(GMEM.JOB_DONE) == 0 do
+                            -- Vérifier si on n'est pas bloqué trop longtemps
+                            if os.time() - start_time > 10 then -- 10 secondes max par instance
+                                log_file:write(string.format("TIMEOUT lors du chargement de l'instance %d\n", i))
+                                timeout = true
+                                break
+                            end
+                            reaper.defer(function() end) -- Laisser REAPER respirer
+                        end
+                        
+                        if not timeout then
+                            log_file:write(string.format("Instance %d chargée avec succès\n", i))
+                        else
+                            log_file:write(string.format("ERREUR: Timeout lors du chargement de l'instance %d\n", i))
+                            reaper.ShowMessageBox(string.format("Timeout lors du chargement de l'instance %d.", i), "Erreur", 0)
+                            break
+                        end
+                    end
+                    
+                    log_file:write("\nChargement terminé avec succès\n")
+                    progress_message = "Chargement terminé avec succès!"
+                    reaper.ShowMessageBox("Chargement terminé avec succès!", "Information", 0)
+                else
+                    log_file:write("Erreur: Format de fichier invalide\n")
+                    log_file:close()
+                    reaper.ShowMessageBox("Format de fichier invalide", "Erreur", 0)
+                end
+                file:close()
+            else
+                log_file:write("Erreur: Impossible d'ouvrir le fichier\n")
                 log_file:close()
+                reaper.ShowMessageBox("Impossible d'ouvrir le fichier", "Erreur", 0)
             end
-            reaper.MB("Chargement terminé avec succès! Un fichier de log a été créé à côté du fichier chargé.", "Information", 0)
-            return
+            log_file:close()
         end
-        
-        -- Lire l'ID de l'instance
-        local instance_id = string.unpack("B", file:read(1))
-        
-        if log_file then
-            log_file:write(string.format("\nChargement de l'instance %d :\n", instance_id))
-        end
-        
-        -- Lire les statistiques de l'instance
-        local memory_used = string.unpack("d", file:read(8))
-        local time_left = string.unpack("d", file:read(8))
-        local active_notes = string.unpack("i", file:read(4))
-        
-        if log_file then
-            log_file:write(string.format("  Mémoire utilisée : %f\n", memory_used))
-            log_file:write(string.format("  Temps restant : %f\n", time_left))
-            log_file:write(string.format("  Notes actives : %d\n", active_notes))
-            log_file:write("  Notes chargées :\n")
-        end
-        
-        -- Écrire les statistiques dans gmem
-        local stats_base = GMEM.STATS_BASE + instance_id * 3
-        reaper.gmem_write(stats_base, memory_used)
-        reaper.gmem_write(stats_base + 1, time_left)
-        reaper.gmem_write(stats_base + 2, active_notes)
-        
-        -- Lire les notes jusqu'au marqueur de fin
-        local notes_loaded = 0
-        while true do
-            local note = string.unpack("B", file:read(1))
-            if note == 255 then break end
-            
-            local note_pos = string.unpack("d", file:read(8))
-            local loop_length = string.unpack("d", file:read(8))
-            
-            -- Écrire les données de la note dans gmem
-            reaper.gmem_write(GMEM.NOTE_START_POS_BASE + instance_id * 128 + note, note_pos)
-            reaper.gmem_write(GMEM.LOOP_LENGTH_BASE + instance_id * 128 + note, loop_length)
-            
-            notes_loaded = notes_loaded + 1
-            if log_file then
-                log_file:write(string.format("    Note %d : Position=%f, Longueur=%f\n", 
-                    note, note_pos, loop_length))
-            end
-        end
-        
-        if log_file then
-            log_file:write(string.format("  Total des notes chargées : %d\n", notes_loaded))
-        end
-        
-        -- Mettre à jour le compteur et le message
-        processed_instances = processed_instances + 1
-        progress_message = string.format("Chargement en cours... (%d/%d instances)", processed_instances, num_instances)
-        
-        -- Programmer le traitement de la prochaine instance
-        reaper.defer(ProcessNextInstance)
     end
-    
-    -- Démarrer le traitement
-    progress_message = "Démarrage du chargement..."
-    ProcessNextInstance()
 end
 
 local function DrawTools()
@@ -2038,6 +2091,12 @@ local function DrawMainWindow()
 
     -- Calculer la nouvelle hauteur requise
     local new_height = calculateRequiredHeight()
+    
+    -- Si on est dans l'onglet Tools, utiliser la hauteur spécifique
+    if current_tab == "Tools" then
+        new_height = TOOLS_TAB_HEIGHT
+    end
+    
     if new_height ~= window_height then
         window_height = new_height
         reaper.ImGui_SetNextWindowSize(ctx, window_width, window_height, reaper.ImGui_Cond_Always())
@@ -2056,30 +2115,35 @@ local function DrawMainWindow()
         if reaper.ImGui_BeginTabBar(ctx, "MainTabs") then
             -- Onglet "Loop Editor"
             if reaper.ImGui_BeginTabItem(ctx, "Loop Editor") then
+                current_tab = "Loop Editor"
                 DrawLoopEditor()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
             -- Onglet "Options"
             if reaper.ImGui_BeginTabItem(ctx, "Options") then
+                current_tab = "Options"
                 DrawOptions()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
             -- Onglet "Tools"
             if reaper.ImGui_BeginTabItem(ctx, "Tools") then
+                current_tab = "Tools"
                 DrawTools()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
             -- Onglet "Stats"
             if reaper.ImGui_BeginTabItem(ctx, "Stats") then
+                current_tab = "Stats"
                 DrawStats()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
             -- Onglet "Debug"
             if reaper.ImGui_BeginTabItem(ctx, "Debug") then
+                current_tab = "Debug"
                 DrawDebug()
                 reaper.ImGui_EndTabItem(ctx)
             end

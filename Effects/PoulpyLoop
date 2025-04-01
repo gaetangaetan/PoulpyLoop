@@ -109,6 +109,14 @@ GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les l
 // Nouveaux indices pour la synchronisation MIDI
 GMEM_MIDI_SYNC_DATA_BASE = 16001; // gmem[16001] à gmem[16001+64*3-1] pour les données de synchronisation MIDI (64 pistes max)
 
+// Indices pour la sauvegarde/chargement audio (déplacés après la zone MIDI_SYNC)
+GMEM_SAVE_LOAD_SAMPLES = 16200;  // 0=normal, 1=sauvegarde, 2=chargement
+GMEM_INSTANCE_ID = 16201;        // Instance en cours de traitement
+GMEM_JOB_ADDRESS = 16202;        // Adresse de début dans gmem
+GMEM_JOB_DONE = 16203;          // 0=en cours, 1=terminé
+GMEM_JOB_LENGTH = 16204;        // Taille des données écrites
+GMEM_MAX_MEMORY = 32000000;     // Taille maximale de la mémoire en doubles
+
 // Variable pour stocker l'offset en cours pour cette instance
 current_offset = 0; // Valeur en secondes
 has_offset = 0;     // Flag indiquant si un offset valide est disponible
@@ -189,20 +197,39 @@ function update_stats()
   
   // Calculer la mémoire utilisée en Mo (8 octets par échantillon car format 64 bits)
   memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
-  gmem[stats_base] = memory_used_mb;
   
-  // Calculer le temps restant en secondes
+  // Calculer le temps restant en secondes (assurons-nous que c'est défini)
   memory_left_seconds = time_left;
-  gmem[stats_base + 1] = memory_left_seconds;
   
-  // Compter le nombre de notes actives
+  // Compter le nombre de notes actives (vérifier à la fois loop_type et note_length)
   notes_count = 0;
+  active_instance = 0;
   i = 0;
   loop(NUM_NOTES,
-    (note_length[i] > 0) ? notes_count += 1;
+    (note_length[i] > 0) ? (
+      notes_count += 1;
+      // Activation automatique des notes ayant du contenu
+      (loop_type[i] < 0) ? loop_type[i] = 0;  // Définir comme RECORD par défaut
+    );
+    
+    (loop_type[i] >= 0 || is_playing[i] > 0 || note_length[i] > 0) ? active_instance = 1;
     i += 1;
   );
+  
+  // Écrire que cette instance est active si un des tableaux est utilisé
+  (next_free_unit[0] > 0 || notes_count > 0) ? active_instance = 1;
+  
+  // Si on a des échantillons ou des notes, indiquer que l'instance est active
+  gmem[stats_base] = active_instance ? memory_used_mb : 0;
+  gmem[stats_base + 1] = memory_left_seconds;
   gmem[stats_base + 2] = notes_count;
+  
+  // Debug info
+  (active_instance) ? (
+    sprintf(debug_str2, "%sInstance #%d ACTIVE, %d notes\n", debug_str2, instance_id, notes_count);
+  ) : (
+    sprintf(debug_str2, "%sInstance #%d inactive\n", debug_str2, instance_id);
+  );
 );
 
 function cc7ToGain(ccVal)
@@ -270,6 +297,9 @@ fade_samples = slider1;
 gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
+// Mise à jour des statistiques au début de chaque bloc
+update_stats();
+
 // Initialiser les valeurs de modulation si ce n'est pas déjà fait
 (modulation_values == 0) ? init_modulation_values();
 
@@ -279,13 +309,44 @@ slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 // Debug: afficher les valeurs importantes
 sprintf(debug_str2, "");
 
+// Ajouter l'état actif de l'instance
+sprintf(debug_str2, "Instance #%d: ", instance_id);
+active_notes = 0;
+notes_with_content = 0;
+i = 0;
+loop(NUM_NOTES,
+  (loop_type[i] >= 0) ? active_notes += 1;
+  (note_length[i] > 0) ? notes_with_content += 1;
+  i += 1;
+);
+sprintf(debug_str2, "%s%d notes actives, %d avec contenu\n", debug_str2, active_notes, notes_with_content);
+
+// Vérifier si cette instance est utilisée
+instance_used = 0;
+i = 0;
+loop(NUM_NOTES,
+  (loop_type[i] >= 0 || note_length[i] > 0 || is_playing[i] > 0) ? instance_used = 1;
+  i += 1;
+);
+
+sprintf(debug_str2, "%sÉtat: %s (mémoire: %.2f Mo)\n", debug_str2, 
+        instance_used ? "ACTIF" : "Inactif",
+        (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024));
+
+// Afficher l'état des statistiques dans gmem
+stats_base = GMEM_STATS_BASE + instance_id * 3;
+sprintf(debug_str2, "%sStats gmem: mem=%.2f, notes=%d\n", 
+        debug_str2, 
+        gmem[stats_base], 
+        gmem[stats_base + 2]);
+
 // Mise à jour des sliders de modulation
 i = 0;
 loop(NUM_NOTES,
   (loop_type[i] >= 0) ? (
     // Debug pour les blocs MONITOR
     (loop_type[i] == 3) ? (
-      sprintf(debug_str2, "MONITOR - Note %d:\n", i);
+      sprintf(debug_str2, "%sMONITOR - Note %d:\n", debug_str2, i);
       sprintf(debug_str2, "%stype=%d, is_playing=%d, is_recording=%d\n", 
         debug_str2, loop_type[i], is_playing[i], is_recording[i]);
       sprintf(debug_str2, "%spos=%.1f, temp_length=%.1f\n", 
@@ -569,7 +630,282 @@ sprintf(time_left_str, "Memo left: %.1f s", time_left);
 // Mettre à jour les statistiques dans gmem
 update_stats();
 
+// Gestion de la sauvegarde/chargement audio
+save_load_mode = gmem[GMEM_SAVE_LOAD_SAMPLES];
+current_instance = gmem[GMEM_INSTANCE_ID];
+job_done = gmem[GMEM_JOB_DONE];
 
+(save_load_mode > 0 && current_instance == instance_id && job_done == 0) ? (
+  // Mode sauvegarde
+  (save_load_mode == 1) ? (
+    job_address = gmem[GMEM_JOB_ADDRESS];
+    job_length = 0;
+    
+    // Écrire l'ID de l'instance
+    gmem[job_address + job_length] = instance_id;
+    job_length += 1;
+    
+    // Écrire le nombre de notes actives
+    active_notes = 0;
+    i = 0;
+    loop(NUM_NOTES,
+      (note_length[i] > 0) ? active_notes += 1;
+      i += 1;
+    );
+    gmem[job_address + job_length] = active_notes;
+    job_length += 1;
+    
+    // Écrire les données pour chaque note active
+    i = 0;
+    loop(NUM_NOTES,
+      (note_length[i] > 0) ? (
+        // Mode stéréo ou mono
+        is_stereo = rec_mode[i] > 0 ? 1 : 0;
+        
+        // Numéro de note MIDI
+        gmem[job_address + job_length] = i;
+        job_length += 1;
+        
+        // Mode stéréo (1) ou mono (0)
+        gmem[job_address + job_length] = is_stereo;
+        job_length += 1;
+        
+        // Longueur réelle en échantillons
+        real_length = note_length[i] * UNIT_SIZE;
+        
+        // Ajuster la longueur pour le stéréo (qui utilise 2 emplacements par échantillon)
+        samples_count = is_stereo ? real_length / 2 : real_length;
+        
+        // Enregistrer les deux valeurs pour faciliter le débogage et la vérification
+        gmem[job_address + job_length] = samples_count;  // Nombre d'échantillons (ou de paires stéréo)
+        job_length += 1;
+        
+        gmem[job_address + job_length] = srate;  // Fréquence d'échantillonnage
+        job_length += 1;
+        
+        // Données audio
+        j = 0;
+        (is_stereo == 1) ? (
+          // Stéréo : 2 échantillons par position
+          loop(samples_count,
+            // Échantillon gauche
+            gmem[job_address + job_length + j] = the_memory[note_start[i] + j*2];
+            j += 1;
+            // Échantillon droit
+            gmem[job_address + job_length + j] = the_memory[note_start[i] + (j-1)*2 + 1];
+            j += 1;
+          );
+        ) : (
+          // Mono : 1 échantillon par position
+          loop(samples_count,
+            gmem[job_address + job_length + j] = the_memory[note_start[i] + j];
+            j += 1;
+          );
+        );
+        job_length += j;
+      );
+      i += 1;
+    );
+    
+    // Mettre à jour la taille totale et marquer comme terminé
+    gmem[GMEM_JOB_LENGTH] = job_length;
+    gmem[GMEM_JOB_DONE] = 1;
+    
+    // Construire et afficher le message de débogage
+    sprintf(debug_str, "Instance %d - Notes chargées:\n\n", instance_id);
+    
+    // Activer automatiquement la première boucle chargée
+    first_note = -1;
+    i = 0;
+    loop(NUM_NOTES,
+      (note_length[i] > 0 && first_note == -1) ? (
+        first_note = i;
+      );
+      i += 1;
+    );
+    
+    (first_note >= 0) ? (
+      // On active la boucle avec le type PLAY et on s'assure qu'elle est marquée active
+      is_playing[first_note] = 1;
+      is_recording[first_note] = 0;
+      read_pos[first_note] = 0;
+      loop_type[first_note] = 1;  // Type PLAY
+      
+      // Forcer la mise à jour des statistiques immédiatement
+      update_stats();
+      
+      sprintf(debug_str, "%s\n\nBoucle %d activée automatiquement (type=PLAY)", debug_str, first_note);
+    );
+    
+    // Débogage des notes chargées
+    i = 0;
+    loop(NUM_NOTES,
+      (note_length[i] > 0) ? (
+        sprintf(debug_str, "%sNote %d: %.2f secondes (type=%d, mode=%s)\n", 
+          debug_str, 
+          i, 
+          note_length[i] * UNIT_SIZE / srate,
+          loop_type[i],
+          rec_mode[i] ? "stereo" : "mono"
+        );
+      );
+      i += 1;
+    );
+  ) : (
+    // Mode chargement
+    job_address = gmem[GMEM_JOB_ADDRESS];
+    job_length = gmem[GMEM_JOB_LENGTH];
+    
+    // Vérifier que nous avons des données à charger
+    (job_length > 0) ? (
+      // Lire l'ID de l'instance (vérification)
+      saved_instance = gmem[job_address];
+      (saved_instance == instance_id) ? (
+        // Lire le nombre de notes
+        num_notes = gmem[job_address + 1];
+        current_pos = 2;
+        
+        // Réinitialiser toutes les notes
+        i = 0;
+        loop(NUM_NOTES,
+          note_length[i] = 0;
+          units_count[i] = 0;
+          is_playing[i] = 0;
+          is_recording[i] = 0;
+          read_pos[i] = 0;
+          loop_type[i] = -1; // Important: réinitialiser le type de loop
+          i += 1;
+        );
+        
+        // Charger chaque note
+        i = 0;
+        loop(num_notes,
+          // Lire le numéro de note
+          note_num = gmem[job_address + current_pos];
+          current_pos += 1;
+          
+          // Lire le mode (stéréo ou mono)
+          is_stereo = gmem[job_address + current_pos];
+          current_pos += 1;
+          
+          // Lire le nombre d'échantillons et la fréquence d'échantillonnage
+          samples_count = gmem[job_address + current_pos];
+          current_pos += 1;
+          
+          src_srate = gmem[job_address + current_pos];
+          current_pos += 1;
+          
+          // Calculer le nombre d'unités nécessaires
+          // En stéréo, il faut 2 fois plus d'espace
+          samples_in_memory = is_stereo ? samples_count * 2 : samples_count;
+          units_needed = ceil(samples_in_memory / UNIT_SIZE);
+          
+          // Allouer la mémoire
+          nu = next_free_unit[0];
+          (nu + units_needed <= max_units) ? (
+            // Allouer la mémoire et initialiser les paramètres
+            note_start[note_num] = nu * UNIT_SIZE;
+            note_length[note_num] = units_needed;
+            units_count[note_num] = units_needed;
+            rec_mode[note_num] = is_stereo;
+            next_free_unit[0] = nu + units_needed;
+            
+            // Définir le type de boucle et les drapeaux nécessaires à la lecture
+            loop_type[note_num] = 0;  // Type par défaut = RECORD
+            
+            // Les flags suivants permettent la lecture après chargement
+            is_playing[note_num] = 0;      // Pas de lecture immédiate, attendre un événement MIDI
+            is_recording[note_num] = 0;    // Pas d'enregistrement actif
+            read_pos[note_num] = 0;        // Position de lecture au début
+            
+            // Copier les données audio
+            j = 0;
+            (is_stereo == 1) ? (
+              // Stéréo : 2 échantillons par position
+              loop(samples_count,
+                // Échantillon gauche
+                the_memory[note_start[note_num] + j*2] = gmem[job_address + current_pos];
+                current_pos += 1;
+                // Échantillon droit
+                the_memory[note_start[note_num] + j*2 + 1] = gmem[job_address + current_pos];
+                current_pos += 1;
+                j += 1;
+              );
+            ) : (
+              // Mono : 1 échantillon par position
+              loop(samples_count,
+                the_memory[note_start[note_num] + j] = gmem[job_address + current_pos];
+                current_pos += 1;
+                j += 1;
+              );
+            );
+            
+            // Facteur d'ajustement en cas de différences de fréquence d'échantillonnage
+            // Non implémenté pour l'instant mais pourrait être utile
+          ) : (
+            sprintf(debug_str, "Erreur: mémoire insuffisante pour charger la note %d", note_num);
+          );
+          i += 1;
+        );
+        
+        // Marquer comme terminé
+        gmem[GMEM_JOB_DONE] = 1;
+        
+        // Construire et afficher le message de débogage
+        sprintf(debug_str, "Instance %d - Notes chargées:\n\n", instance_id);
+        
+        // Forcer une mise à jour des statistiques
+        update_stats();
+        
+        // Activer automatiquement la première boucle chargée
+        first_note = -1;
+        i = 0;
+        loop(NUM_NOTES,
+          (note_length[i] > 0 && first_note == -1) ? (
+            first_note = i;
+          );
+          i += 1;
+        );
+        
+        (first_note >= 0) ? (
+          // On active la boucle avec le type PLAY et on s'assure qu'elle est marquée active
+          is_playing[first_note] = 1;
+          is_recording[first_note] = 0;
+          read_pos[first_note] = 0;
+          loop_type[first_note] = 1;  // Type PLAY
+          
+          // Forcer une nouvelle mise à jour des statistiques
+          update_stats();
+          
+          sprintf(debug_str, "%s\n\nBoucle %d activée automatiquement (type=PLAY)\n", debug_str, first_note);
+          sprintf(debug_str, "%sVérifiez les statistiques dans l'interface.", debug_str);
+        );
+        
+        // Débogage des notes chargées
+        i = 0;
+        loop(NUM_NOTES,
+          (note_length[i] > 0) ? (
+            sprintf(debug_str, "%sNote %d: %.2f secondes (type=%d, mode=%s)\n", 
+              debug_str, 
+              i, 
+              note_length[i] * UNIT_SIZE / srate,
+              loop_type[i],
+              rec_mode[i] ? "stereo" : "mono"
+            );
+          );
+          i += 1;
+        );
+      ) : (
+        // Si l'ID ne correspond pas, marquer comme terminé pour éviter la boucle
+        gmem[GMEM_JOB_DONE] = 1;
+        sprintf(debug_str, "Erreur: ID d'instance incorrect");
+      );
+    ) : (
+      // Si pas de données à charger, marquer comme terminé
+      gmem[GMEM_JOB_DONE] = 1;
+    );
+  );
+);
 
 @sample
 inL = spl0;
@@ -594,11 +930,22 @@ playback_mode = get_playback_mode();
 
 i = 0;
 loop(NUM_NOTES,
-  (loop_type[i] != -1) ? (  // Boucle active
+  // Activer automatiquement le type pour les notes qui ont du contenu mais pas de type défini
+  (note_length[i] > 0 && loop_type[i] < 0) ? (
+    loop_type[i] = 0;  // Par défaut, on définit comme RECORD
+  );
+  
+  (loop_type[i] != -1 || note_length[i] > 0) ? (  // Boucle active ou contenu existant
     any_loop_active = 1;
     curLen = note_length[i];
     unitCount = units_count[i];
     capacity = unitCount * UNIT_SIZE;
+    
+    // Si note_length > 0 mais is_playing est à 0, activer la lecture en mode PLAYBACK
+    (curLen > 0 && is_playing[i] == 0 && playback_mode == 1) ? (
+      is_playing[i] = 1;
+      read_pos[i] = 0;
+    );
     
     // Incrémenter read_pos pour la lecture, l'enregistrement et les blocs MONITOR
     ((is_playing[i] || is_recording[i] || loop_type[i] == 3) && (curLen > 0 || is_recording[i] || loop_type[i] == 3)) ? (
