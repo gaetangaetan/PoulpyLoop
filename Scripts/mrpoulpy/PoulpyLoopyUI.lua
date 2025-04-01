@@ -1078,21 +1078,15 @@ local function DrawOptions()
     reaper.ImGui_Text(ctx, "Monitoring à l'arrêt des pistes PoulpyLoop :")
     reaper.ImGui_Separator(ctx)
 
-    -- Tableau pour afficher les pistes avec PoulpyLoop
-    reaper.ImGui_BeginTable(ctx, "monitoring_table", 2, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
-    reaper.ImGui_TableSetupColumn(ctx, "Piste", reaper.ImGui_TableColumnFlags_WidthStretch())
-    reaper.ImGui_TableSetupColumn(ctx, "Monitoring à l'arrêt", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
-    reaper.ImGui_TableHeadersRow(ctx)
-
-    -- Parcourir toutes les pistes
+    -- Tableau pour stocker les pistes avec PoulpyLoop et leurs indices de monitoring
+    local poulpy_tracks = {}
     local num_tracks = reaper.CountTracks(0)
     for i = 0, num_tracks - 1 do
         local track = reaper.GetTrack(0, i)
-        local _, track_name = reaper.GetTrackName(track)
+        local fx_count = reaper.TrackFX_GetCount(track)
+        local has_poulpyloop = false
         
         -- Vérifier si la piste contient un plugin PoulpyLoop
-        local has_poulpyloop = false
-        local fx_count = reaper.TrackFX_GetCount(track)
         for j = 0, fx_count - 1 do
             local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
             if fx_name:find("PoulpyLoop") then
@@ -1102,32 +1096,48 @@ local function DrawOptions()
         end
 
         if has_poulpyloop then
-            reaper.ImGui_TableNextRow(ctx)
-            
-            -- Nom de la piste
-            reaper.ImGui_TableNextColumn(ctx)
-            reaper.ImGui_Text(ctx, track_name)
+            table.insert(poulpy_tracks, {
+                track = track,
+                track_index = i,
+                monitoring_index = #poulpy_tracks  -- Index séquentiel pour le monitoring
+            })
+        end
+    end
 
-            -- Case à cocher pour le monitoring à l'arrêt
-            reaper.ImGui_TableNextColumn(ctx)
-            local monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + i) == 1
-            if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. i, monitoring_stop) then
-                -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
-                local fx_count = reaper.TrackFX_GetCount(track)
-                for j = 0, fx_count - 1 do
-                    local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
-                    if fx_name:find("PoulpyLoop") then
-                        -- Au lieu d'écrire directement dans gmem, on va modifier le paramètre du plugin
-                        -- qui s'occupera lui-même de mettre à jour gmem
-                        local new_value = monitoring_stop and 0 or 1
-                        reaper.TrackFX_SetParam(track, j, 2, new_value) -- slider3 est le paramètre d'index 2
-                    end
+    -- Tableau pour afficher les pistes avec PoulpyLoop
+    reaper.ImGui_BeginTable(ctx, "monitoring_table", 2, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
+    reaper.ImGui_TableSetupColumn(ctx, "Piste", reaper.ImGui_TableColumnFlags_WidthStretch())
+    reaper.ImGui_TableSetupColumn(ctx, "Monitoring à l'arrêt", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
+    reaper.ImGui_TableHeadersRow(ctx)
+
+    -- Afficher uniquement les pistes avec PoulpyLoop
+    for _, track_info in ipairs(poulpy_tracks) do
+        reaper.ImGui_TableNextRow(ctx)
+        
+        -- Nom de la piste
+        reaper.ImGui_TableNextColumn(ctx)
+        local _, track_name = reaper.GetTrackName(track_info.track)
+        reaper.ImGui_Text(ctx, track_name)
+
+        -- Case à cocher pour le monitoring à l'arrêt
+        reaper.ImGui_TableNextColumn(ctx)
+        local monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + track_info.monitoring_index) == 1
+        if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. track_info.track_index, monitoring_stop) then
+            -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
+            local fx_count = reaper.TrackFX_GetCount(track_info.track)
+            for j = 0, fx_count - 1 do
+                local retval, fx_name = reaper.TrackFX_GetFXName(track_info.track, j, "")
+                if fx_name:find("PoulpyLoop") then
+                    -- Au lieu d'écrire directement dans gmem, on va modifier le paramètre du plugin
+                    -- qui s'occupera lui-même de mettre à jour gmem
+                    local new_value = monitoring_stop and 0 or 1
+                    reaper.TrackFX_SetParam(track_info.track, j, 2, new_value) -- slider3 est le paramètre d'index 2
                 end
             end
-            
-            if reaper.ImGui_IsItemHovered(ctx) then
-                reaper.ImGui_SetTooltip(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt.")
-            end
+        end
+        
+        if reaper.ImGui_IsItemHovered(ctx) then
+            reaper.ImGui_SetTooltip(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt.")
         end
     end
 
@@ -1274,6 +1284,442 @@ local function RenderSelection()
     end
 end
 
+-- Fonction pour mettre à jour un bloc
+local function UpdateBlock(take)
+    -- Sauvegarder la sélection actuelle
+    local old_sel_items = {}
+    for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
+        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+    end
+    
+    -- Désélectionner tous les items
+    for _, sel_item in ipairs(old_sel_items) do
+        reaper.SetMediaItemSelected(sel_item, false)
+    end
+    
+    -- Sélectionner l'item à mettre à jour
+    local item = reaper.GetMediaItemTake_Item(take)
+    reaper.SetMediaItemSelected(item, true)
+    
+    -- Forcer une mise à jour des données
+    UpdateTakeData(take)
+    
+    -- Simuler un clic sur le bouton Appliquer
+    if current_take then
+        local loop_type = GetTakeMetadata(take, "loop_type")
+        if loop_type == "RECORD" then
+            local valid, message = IsLoopNameValid(take, loop_name)
+            if valid then
+                local old_name = GetTakeMetadata(take, "loop_name") or ""
+                SetTakeMetadata(take, "loop_type", loop_type)
+                SetTakeMetadata(take, "loop_name", loop_name)
+                SetTakeMetadata(take, "is_mono", tostring(is_mono))
+                SetTakeMetadata(take, "pan", tostring(pan))
+                SetTakeMetadata(take, "volume_db", tostring(volume_db))
+                SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                for i, param in ipairs(modulation_params) do
+                    SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                    SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                end
+                reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", loop_name, true)
+                reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.RECORD)
+                if old_name ~= "" and old_name ~= loop_name then
+                    UpdateDependentLoops(take, old_name, loop_name)
+                end
+                local track = reaper.GetMediaItemTake_Track(take)
+                ProcessMIDINotes(track)
+            end
+        elseif loop_type == "PLAY" then
+            SetTakeMetadata(take, "loop_type", loop_type)
+            SetTakeMetadata(take, "reference_loop", reference_loop)
+            SetTakeMetadata(take, "pan", tostring(pan))
+            SetTakeMetadata(take, "volume_db", tostring(volume_db))
+            SetTakeMetadata(take, "pitch", tostring(pitch))
+            SetTakeMetadata(take, "monitoring", tostring(monitoring))
+            for i, param in ipairs(modulation_params) do
+                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+            end
+            reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
+            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.PLAY)
+        elseif loop_type == "OVERDUB" then
+            SetTakeMetadata(take, "loop_type", loop_type)
+            SetTakeMetadata(take, "reference_loop", reference_loop)
+            SetTakeMetadata(take, "pan", tostring(pan))
+            SetTakeMetadata(take, "volume_db", tostring(volume_db))
+            SetTakeMetadata(take, "is_mono", tostring(is_mono))
+            SetTakeMetadata(take, "monitoring", tostring(monitoring))
+            for i, param in ipairs(modulation_params) do
+                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+            end
+            reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
+            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.OVERDUB)
+        elseif loop_type == "MONITOR" then
+            SetTakeMetadata(take, "loop_type", loop_type)
+            SetTakeMetadata(take, "pan", tostring(pan))
+            SetTakeMetadata(take, "volume_db", tostring(volume_db))
+            SetTakeMetadata(take, "is_mono", tostring(is_mono))
+            SetTakeMetadata(take, "monitoring", "1")
+            for i, param in ipairs(modulation_params) do
+                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+            end
+            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.MONITOR)
+        end
+    end
+    
+    -- Restaurer la sélection originale
+    reaper.SetMediaItemSelected(item, false)
+    for _, sel_item in ipairs(old_sel_items) do
+        reaper.SetMediaItemSelected(sel_item, true)
+    end
+end
+
+-- Fonction pour mettre à jour tous les blocs du projet
+local function UpdateAllBlocks()
+    -- Sauvegarder la sélection actuelle
+    local old_sel_items = {}
+    for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
+        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+    end
+    
+    -- Tableau pour stocker tous les blocs à traiter
+    local blocks_to_process = {}
+    
+    -- Compter et collecter tous les blocs à traiter
+    local num_tracks = reaper.CountTracks(0)
+    for t = 0, num_tracks - 1 do
+        local track = reaper.GetTrack(0, t)
+        local fx_count = reaper.TrackFX_GetCount(track)
+        local has_poulpy_loop = false
+        
+        -- Vérifier si la piste contient PoulpyLoop
+        for j = 0, fx_count - 1 do
+            local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+            if fx_name:find("PoulpyLoop") then
+                has_poulpy_loop = true
+                break
+            end
+        end
+        
+        if has_poulpy_loop then
+            local item_count = reaper.CountTrackMediaItems(track)
+            for i = 0, item_count - 1 do
+                local item = reaper.GetTrackMediaItem(track, i)
+                local take = reaper.GetActiveTake(item)
+                if take and reaper.TakeIsMIDI(take) and GetTakeMetadata(take, "loop_type") then
+                    table.insert(blocks_to_process, {
+                        take = take,
+                        item = item,
+                        track = track
+                    })
+                end
+            end
+        end
+    end
+    
+    -- Si aucun bloc à traiter, on s'arrête
+    if #blocks_to_process == 0 then
+        reaper.ShowMessageBox("Aucun bloc à mettre à jour.", "Information", 0)
+        return
+    end
+    
+    -- Variables pour le suivi de la progression
+    local total_blocks = #blocks_to_process
+    local processed_blocks = 0
+    
+    -- Fonction pour traiter le prochain bloc
+    local function ProcessNextBlock()
+        if processed_blocks >= total_blocks then
+            -- Traitement terminé
+            progress_message = "Mise à jour terminée!"
+            -- Restaurer la sélection originale
+            for _, sel_item in ipairs(old_sel_items) do
+                reaper.SetMediaItemSelected(sel_item, true)
+            end
+            return
+        end
+        
+        -- Traiter le bloc actuel
+        local block = blocks_to_process[processed_blocks + 1]
+        UpdateBlock(block.take)
+        
+        -- Mettre à jour le compteur et le message
+        processed_blocks = processed_blocks + 1
+        progress_message = string.format("Mise à jour des blocs... (%d/%d)", processed_blocks, total_blocks)
+        
+        -- Programmer le traitement du prochain bloc
+        reaper.defer(ProcessNextBlock)
+    end
+    
+    -- Démarrer le traitement
+    progress_message = "Démarrage de la mise à jour..."
+    ProcessNextBlock()
+end
+
+-- Ajouter après les autres fonctions locales et avant DrawMainWindow
+
+-- Fonction pour sauvegarder l'audio dans un fichier
+local function SaveAudioToFile()
+    -- Vérifier que l'extension JS est chargée
+    if not reaper.JS_Dialog_BrowseForSaveFile then
+        reaper.MB("L'extension JS_ReaScript est requise. Veuillez l'installer via ReaPack.", "Erreur", 0)
+        return
+    end
+    
+    -- Ouvrir la boîte de dialogue de sélection de fichier
+    local retval, filename = reaper.JS_Dialog_BrowseForSaveFile("Sauvegarder l'audio PoulpyLoop", reaper.GetProjectPath(), "save.pla", "PoulpyLoop Audio (*.pla)\0*.pla\0", ".pla")
+    if not retval then return end
+    
+    -- Ajouter l'extension .pla si elle n'est pas présente
+    if not filename:match("%.pla$") then
+        filename = filename .. ".pla"
+    end
+    
+    -- Créer un fichier de log à côté du fichier de sauvegarde
+    local log_filename = filename .. ".log"
+    local log_file = io.open(log_filename, "w")
+    
+    -- Ouvrir le fichier en écriture binaire
+    local file = io.open(filename, "wb")
+    if not file then
+        reaper.MB("Impossible d'ouvrir le fichier en écriture.", "Erreur", 0)
+        return
+    end
+    
+    -- Écrire l'en-tête avec la version
+    file:write("PLA1") -- PoulpyLoop Audio format version 1
+    
+    -- Table pour stocker les instances actives
+    local active_instances = {}
+    
+    -- Compter les instances actives et logger les informations
+    for instance_id = 0, 63 do
+        local stats_base = GMEM.STATS_BASE + instance_id * 3
+        local memory_used = reaper.gmem_read(stats_base)
+        if memory_used > 0 then
+            table.insert(active_instances, instance_id)
+            if log_file then
+                log_file:write(string.format("Instance %d trouvée : Mémoire=%f, Temps=%f, Notes=%d\n", 
+                    instance_id,
+                    memory_used,
+                    reaper.gmem_read(stats_base + 1),
+                    reaper.gmem_read(stats_base + 2)
+                ))
+            end
+        end
+    end
+    
+    -- Écrire le nombre d'instances actives
+    file:write(string.pack("B", #active_instances))
+    if log_file then
+        log_file:write(string.format("\nNombre total d'instances actives : %d\n\n", #active_instances))
+    end
+    
+    -- Variables pour le suivi de la progression
+    local total_instances = #active_instances
+    local processed_instances = 0
+    
+    -- Fonction pour traiter la prochaine instance
+    local function ProcessNextInstance()
+        if processed_instances >= total_instances then
+            -- Traitement terminé
+            file:close()
+            if log_file then
+                log_file:write("\nSauvegarde terminée avec succès!")
+                log_file:close()
+            end
+            reaper.MB("Sauvegarde terminée avec succès! Un fichier de log a été créé à côté du fichier de sauvegarde.", "Information", 0)
+            return
+        end
+        
+        -- Traiter l'instance actuelle
+        local instance_id = active_instances[processed_instances + 1]
+        local stats_base = GMEM.STATS_BASE + instance_id * 3
+        
+        if log_file then
+            log_file:write(string.format("\nTraitement de l'instance %d :\n", instance_id))
+        end
+        
+        -- Écrire l'ID de l'instance
+        file:write(string.pack("B", instance_id))
+        
+        -- Écrire les statistiques de l'instance
+        local memory_used = reaper.gmem_read(stats_base)
+        local time_left = reaper.gmem_read(stats_base + 1)
+        local notes_active = reaper.gmem_read(stats_base + 2)
+        
+        file:write(string.pack("d", memory_used))
+        file:write(string.pack("d", time_left))
+        file:write(string.pack("i", notes_active))
+        
+        if log_file then
+            log_file:write(string.format("  Mémoire utilisée : %f\n", memory_used))
+            log_file:write(string.format("  Temps restant : %f\n", time_left))
+            log_file:write(string.format("  Notes actives : %d\n", notes_active))
+            log_file:write("  Notes trouvées :\n")
+        end
+        
+        -- Pour chaque note possible
+        local notes_found = 0
+        for note = 0, 127 do
+            local note_pos = reaper.gmem_read(GMEM.NOTE_START_POS_BASE + instance_id * 128 + note)
+            local loop_length = reaper.gmem_read(GMEM.LOOP_LENGTH_BASE + instance_id * 128 + note)
+            
+            if loop_length > 0 then
+                file:write(string.pack("B", note))
+                file:write(string.pack("d", note_pos))
+                file:write(string.pack("d", loop_length))
+                notes_found = notes_found + 1
+                
+                if log_file then
+                    log_file:write(string.format("    Note %d : Position=%f, Longueur=%f\n", 
+                        note, note_pos, loop_length))
+                end
+            end
+        end
+        
+        if log_file then
+            log_file:write(string.format("  Total des notes trouvées : %d\n", notes_found))
+        end
+        
+        -- Marquer la fin des notes pour cette instance
+        file:write(string.pack("B", 255))
+        
+        -- Mettre à jour le compteur et le message
+        processed_instances = processed_instances + 1
+        progress_message = string.format("Sauvegarde en cours... (%d/%d instances)", processed_instances, total_instances)
+        
+        -- Programmer le traitement de la prochaine instance
+        reaper.defer(ProcessNextInstance)
+    end
+    
+    -- Démarrer le traitement
+    progress_message = "Démarrage de la sauvegarde..."
+    ProcessNextInstance()
+end
+
+-- Fonction pour charger l'audio depuis un fichier
+local function LoadAudioFromFile()
+    -- Vérifier que l'extension JS est chargée
+    if not reaper.JS_Dialog_BrowseForOpenFiles then
+        reaper.MB("L'extension JS_ReaScript est requise. Veuillez l'installer via ReaPack.", "Erreur", 0)
+        return
+    end
+    
+    -- Ouvrir la boîte de dialogue de sélection de fichier
+    local retval, filename = reaper.JS_Dialog_BrowseForOpenFiles("Charger l'audio PoulpyLoop", reaper.GetProjectPath(), "", "PoulpyLoop Audio (*.pla)\0*.pla\0", ".pla")
+    if not retval then return end
+    
+    -- Créer un fichier de log à côté du fichier de chargement
+    local log_filename = filename .. ".load.log"
+    local log_file = io.open(log_filename, "w")
+    
+    -- Ouvrir le fichier en lecture binaire
+    local file = io.open(filename, "rb")
+    if not file then
+        reaper.MB("Impossible d'ouvrir le fichier en lecture.", "Erreur", 0)
+        return
+    end
+    
+    -- Vérifier l'en-tête
+    local header = file:read(4)
+    if header ~= "PLA1" then
+        reaper.MB("Format de fichier invalide.", "Erreur", 0)
+        file:close()
+        return
+    end
+    
+    if log_file then
+        log_file:write("En-tête PLA1 vérifié avec succès\n\n")
+    end
+    
+    -- Lire le nombre d'instances
+    local num_instances = string.unpack("B", file:read(1))
+    
+    if log_file then
+        log_file:write(string.format("Nombre d'instances à charger : %d\n\n", num_instances))
+    end
+    
+    -- Variables pour le suivi de la progression
+    local processed_instances = 0
+    
+    -- Fonction pour traiter la prochaine instance
+    local function ProcessNextInstance()
+        if processed_instances >= num_instances then
+            -- Traitement terminé
+            file:close()
+            if log_file then
+                log_file:write("\nChargement terminé avec succès!")
+                log_file:close()
+            end
+            reaper.MB("Chargement terminé avec succès! Un fichier de log a été créé à côté du fichier chargé.", "Information", 0)
+            return
+        end
+        
+        -- Lire l'ID de l'instance
+        local instance_id = string.unpack("B", file:read(1))
+        
+        if log_file then
+            log_file:write(string.format("\nChargement de l'instance %d :\n", instance_id))
+        end
+        
+        -- Lire les statistiques de l'instance
+        local memory_used = string.unpack("d", file:read(8))
+        local time_left = string.unpack("d", file:read(8))
+        local active_notes = string.unpack("i", file:read(4))
+        
+        if log_file then
+            log_file:write(string.format("  Mémoire utilisée : %f\n", memory_used))
+            log_file:write(string.format("  Temps restant : %f\n", time_left))
+            log_file:write(string.format("  Notes actives : %d\n", active_notes))
+            log_file:write("  Notes chargées :\n")
+        end
+        
+        -- Écrire les statistiques dans gmem
+        local stats_base = GMEM.STATS_BASE + instance_id * 3
+        reaper.gmem_write(stats_base, memory_used)
+        reaper.gmem_write(stats_base + 1, time_left)
+        reaper.gmem_write(stats_base + 2, active_notes)
+        
+        -- Lire les notes jusqu'au marqueur de fin
+        local notes_loaded = 0
+        while true do
+            local note = string.unpack("B", file:read(1))
+            if note == 255 then break end
+            
+            local note_pos = string.unpack("d", file:read(8))
+            local loop_length = string.unpack("d", file:read(8))
+            
+            -- Écrire les données de la note dans gmem
+            reaper.gmem_write(GMEM.NOTE_START_POS_BASE + instance_id * 128 + note, note_pos)
+            reaper.gmem_write(GMEM.LOOP_LENGTH_BASE + instance_id * 128 + note, loop_length)
+            
+            notes_loaded = notes_loaded + 1
+            if log_file then
+                log_file:write(string.format("    Note %d : Position=%f, Longueur=%f\n", 
+                    note, note_pos, loop_length))
+            end
+        end
+        
+        if log_file then
+            log_file:write(string.format("  Total des notes chargées : %d\n", notes_loaded))
+        end
+        
+        -- Mettre à jour le compteur et le message
+        processed_instances = processed_instances + 1
+        progress_message = string.format("Chargement en cours... (%d/%d instances)", processed_instances, num_instances)
+        
+        -- Programmer le traitement de la prochaine instance
+        reaper.defer(ProcessNextInstance)
+    end
+    
+    -- Démarrer le traitement
+    progress_message = "Démarrage du chargement..."
+    ProcessNextInstance()
+end
+
 local function DrawTools()
     -- Partie 1: Outils de base
     reaper.ImGui_Text(ctx, "Outils de base :")
@@ -1383,6 +1829,67 @@ local function DrawTools()
     else
         reaper.ImGui_Text(ctx, "Chargez d'abord un fichier ALK pour accéder aux pistes d'automation.")
     end
+
+    reaper.ImGui_Separator(ctx)
+    
+    -- Partie 5: Mise à jour globale
+    reaper.ImGui_Text(ctx, "Mise à jour globale :")
+    reaper.ImGui_Separator(ctx)
+    
+    -- Bouton avec style spécial pour la mise à jour globale
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0xAB47BCFF)  -- Violet
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0xBA68C8FF)  -- Violet plus clair
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x9C27B0FF)  -- Violet plus foncé
+    
+    if reaper.ImGui_Button(ctx, "Mettre à jour tous les blocs") then
+        -- Demander confirmation
+        local confirm = reaper.ShowMessageBox(
+            "Cette opération va mettre à jour tous les blocs du projet pour les rendre compatibles avec la dernière version.\n\n" ..
+            "Cette opération peut prendre un certain temps selon la taille du projet.\n\n" ..
+            "Voulez-vous continuer ?",
+            "Confirmation de mise à jour globale",
+            4)  -- 4 = Yes/No
+        
+        if confirm == 6 then  -- 6 = Yes
+            UpdateAllBlocks()
+        end
+    end
+    
+    reaper.ImGui_PopStyleColor(ctx, 3)
+    
+    if progress_message ~= "" then
+        reaper.ImGui_Text(ctx, progress_message)
+    end
+    
+    reaper.ImGui_Separator(ctx)
+    
+    -- Partie 6: Sauvegarde/Chargement Audio
+    reaper.ImGui_Text(ctx, "Sauvegarde/Chargement Audio :")
+    reaper.ImGui_Separator(ctx)
+    
+    -- Bouton de sauvegarde
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x4CAF50FF)  -- Vert
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x66BB6AFF)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x43A047FF)
+    
+    if reaper.ImGui_Button(ctx, "Enregistrer l'audio dans un fichier") then
+        SaveAudioToFile()
+    end
+    
+    reaper.ImGui_PopStyleColor(ctx, 3)
+    
+    -- Bouton de chargement
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x2196F3FF)  -- Bleu
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x42A5F5FF)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x1E88E5FF)
+    
+    if reaper.ImGui_Button(ctx, "Charger l'audio à partir d'un fichier") then
+        LoadAudioFromFile()
+    end
+    
+    reaper.ImGui_PopStyleColor(ctx, 3)
+    
+    reaper.ImGui_Separator(ctx)
 end
 
 local function DrawStats()
