@@ -39,7 +39,7 @@ local reaper = reaper
 
 -- Charger les modules
 local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/"
-local core = dofile(script_path .. "PoulpyLoopyCore.lua")
+local core = dofile(script_path .. "PoulpyLoopyCore1.lua")
 local ui = dofile(script_path .. "PoulpyLoopyUI.lua")
 
 --------------------------------------------------------------------------------
