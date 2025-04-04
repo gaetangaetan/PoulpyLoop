@@ -81,8 +81,9 @@ M.GMEM = {
     LOG_START = 29008,          -- Début du journal
     LOG_LENGTH = 29009,         -- Nombre d'entrées dans le journal
     LOG_DATA = 29010,           -- Début des données du journal
-    DATA_START = 30000,         -- Début de la mémoire de données
-    DATA_END = 59999           -- Fin de la mémoire de données
+    DATA_SIZE = 29011,          -- Où stocker la taille des données
+    DATA_BUFFER = 30000,        -- Début du buffer de données
+    DATA_BUFFER_END = 59999     -- Fin du buffer de données
 }
 
 --------------------------------------------------------------------------------
@@ -224,6 +225,7 @@ function M.update_jsfx_constants()
     
     -- Si les constantes sont identiques, ne rien faire
     if normalize(current_constants) == normalize(new_constants) then
+        reaper.ShowMessageBox("Aucune modification n'était nécessaire. Les constantes sont déjà à jour.", "Mise à jour des constantes", 0)
         return true, "Les constantes JSFX sont déjà à jour"
     end
     
@@ -243,7 +245,7 @@ function M.update_jsfx_constants()
     file:close()
     
     -- Afficher un message indiquant que le fichier a été modifié
-    reaper.ShowMessageBox("Le fichier PoulpyLoop a été mis à jour avec les nouvelles constantes.", "Mise à jour des constantes", 0)
+    reaper.ShowMessageBox("Des modifications ont été apportées aux constantes. Le fichier PoulpyLoop a été mis à jour.", "Mise à jour des constantes", 0)
     
     return true, "Constantes JSFX mises à jour avec succès"
 end

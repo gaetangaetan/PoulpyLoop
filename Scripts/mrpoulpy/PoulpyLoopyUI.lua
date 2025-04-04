@@ -1,14 +1,22 @@
 --[[------------------------------------------------------------------------------
   PoulpyLoopyUI.lua
-  Module contenant les fonctions de l'interface utilisateur pour PoulpyLoopy
+  Interface utilisateur pour PoulpyLoopy
 ------------------------------------------------------------------------------]]
 
 local reaper = reaper
+local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/"
+local core = dofile(script_path .. "PoulpyLoopyCore0.lua")
+
+-- Variables globales
+local ctx = nil
+local window_width = 400
+local window_height = 270
+local window_flags = reaper.ImGui_WindowFlags_NoResize() | reaper.ImGui_WindowFlags_NoCollapse()
+local window_title = "PoulpyLoopy v" .. core.VERSION
 
 -- Charger le module Core
-local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/"
-local core = dofile(script_path .. "PoulpyLoopyCore1.lua")
 local alk = dofile(script_path .. "PoulpyLoopyImportALK.lua")
+local core1 = dofile(script_path .. "PoulpyLoopyCore1.lua")  -- Ajout du chargement de core1
 local core2 = dofile(script_path .. "PoulpyLoopyCore2.lua")  -- Nouveau module
 
 -- Créer le contexte ImGui au niveau global
@@ -24,23 +32,24 @@ local COLORS = core.COLORS
 local LOOP_TYPES = core.LOOP_TYPES
 local VERSION = core.VERSION
 local GMEM = core.GMEM
-local GetTakeMetadata = core.GetTakeMetadata
-local SetTakeMetadata = core.SetTakeMetadata
-local IsLoopNameValid = core.IsLoopNameValid
-local UpdateDependentLoops = core.UpdateDependentLoops
-local ProcessMIDINotes = core.ProcessMIDINotes
-local UnfoldPlayLoop = core.UnfoldPlayLoop
-local get_record_monitor_loops_mode = core.get_record_monitor_loops_mode
-local get_playback_mode = core.get_playback_mode
-local save_record_monitor_loops_mode = core.save_record_monitor_loops_mode
-local save_playback_mode = core.save_playback_mode
-local addLooper = core.addLooper
-local setLoopsMonoStereo = core.setLoopsMonoStereo
-local parseALK = core.parseALK
-local importProject = core.importProject
-local importMetronome = core.importMetronome
-local debug_console = core.debug_console
-local ApplyMIDIChanges = core.ApplyMIDIChanges
+local GetTakeMetadata = core1.GetTakeMetadata
+local SetTakeMetadata = core1.SetTakeMetadata
+local IsLoopNameValid = core1.IsLoopNameValid
+local UpdateDependentLoops = core1.UpdateDependentLoops
+local ProcessMIDINotes = core1.ProcessMIDINotes
+local UnfoldPlayLoop = core1.UnfoldPlayLoop
+local get_record_monitor_loops_mode = core1.get_record_monitor_loops_mode
+local get_playback_mode = core1.get_playback_mode
+local save_record_monitor_loops_mode = core1.save_record_monitor_loops_mode
+local save_playback_mode = core1.save_playback_mode
+local addLooper = core1.addLooper
+local setLoopsMonoStereo = core1.setLoopsMonoStereo
+local parseALK = core1.parseALK
+local importProject = core1.importProject
+local importMetronome = core1.importMetronome
+local debug_console = core1.debug_console
+local ApplyMIDIChanges = core1.ApplyMIDIChanges
+local update_jsfx_constants = core.update_jsfx_constants  -- Ajout de l'import
 
 -- Module à exporter
 local M = {}
@@ -66,8 +75,6 @@ local title_font = nil
 local progress_message = ""
 local processing_items = {}
 local show_modulation = false
-local window_height = 500  -- Nouvelle variable pour la hauteur de la fenêtre
-local window_width = 700   -- Nouvelle variable pour la largeur de la fenêtre
 local render_realtime = true  -- true = realtime (idle), false = full speed
 local TOOLS_TAB_HEIGHT = 460  -- Hauteur par défaut pour l'onglet Tools
 local current_tab = "Loop Editor"  -- Onglet actuellement affiché
@@ -1784,6 +1791,21 @@ local function DrawDebug()
         reaper.gmem_write(GMEM.FORCE_ANALYZE, 1)
         debug_console("Demande d'analyse forcée des offsets envoyée\n")
     end
+
+    -- Nouveau bouton pour mettre à jour les constantes
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0xAB47BCFF)  -- Violet
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0xBA68C8FF)  -- Violet plus clair
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x9C27B0FF)  -- Violet plus foncé
+    
+    if reaper.ImGui_Button(ctx, "Mettre à jour les constantes") then
+        local success, message = core.update_jsfx_constants()
+        if not success then
+            reaper.ShowMessageBox(message, "Erreur", 0)
+        end
+    end
+    
+    reaper.ImGui_PopStyleColor(ctx, 3)
 end
 
 --------------------------------------------------------------------------------

@@ -31,39 +31,40 @@ ext_noinit = 1;
 // Ne pas modifier manuellement
 
 // Constantes de base
+UNIT_SIZE = 262144;
+NUM_NOTES = 128;
 BLOCK_SIZE = 1024;
 MODULATION_SIZE = 20;
-NUM_NOTES = 128;
-UNIT_SIZE = 262144;
 MODULATION_COUNT = 10;
 
 // Indices GMEM
-GMEM_LOOP_LENGTH_BASE = 8451;
-GMEM_MESSAGE_WRITE_POS = 16999;
-GMEM_UI_COMMAND = 29000;
-GMEM_MIDI_SYNC_DATA_BASE = 16001;
-GMEM_NOTE_START_POS_BASE = 259;
-GMEM_TOTAL_LENGTH = 29004;
-GMEM_RECORD_MONITOR_MODE = 0;
-GMEM_DATA_END = 59999;
-GMEM_DATA_START = 30000;
-GMEM_LOG_DATA = 29010;
-GMEM_NEXT_INSTANCE_ID = 194;
-GMEM_LOG_START = 29008;
-GMEM_MONITORING_STOP_BASE = 195;
-GMEM_DEBUG_VALUE = 29007;
-GMEM_AFFICHAGE_CONSOLE_DEBUG = 16998;
-GMEM_LOG_LENGTH = 29009;
-GMEM_STATS_BASE = 2;
 GMEM_DEBUG_CODE = 29006;
-GMEM_SAVE_COMPLETE = 29005;
-GMEM_DATA_LENGTH = 29002;
-GMEM_INSTANCE_ID = 29001;
-GMEM_MESSAGE_END = 18000;
-GMEM_PLAYBACK_MODE = 1;
-GMEM_MESSAGE_BASE = 17000;
-GMEM_FORCE_ANALYZE = 16000;
+GMEM_MONITORING_STOP_BASE = 195;
+GMEM_MIDI_SYNC_DATA_BASE = 16001;
+GMEM_LOG_START = 29008;
+GMEM_DATA_BUFFER = 30000;
+GMEM_DATA_SIZE = 29011;
+GMEM_NOTE_START_POS_BASE = 259;
 GMEM_WRITING_RIGHT = 29003;
+GMEM_FORCE_ANALYZE = 16000;
+GMEM_MESSAGE_WRITE_POS = 16999;
+GMEM_SAVE_COMPLETE = 29005;
+GMEM_DATA_BUFFER_END = 59999;
+GMEM_LOG_LENGTH = 29009;
+GMEM_LOG_DATA = 29010;
+GMEM_RECORD_MONITOR_MODE = 0;
+GMEM_DEBUG_VALUE = 29007;
+GMEM_TOTAL_LENGTH = 29004;
+GMEM_STATS_BASE = 2;
+GMEM_MESSAGE_BASE = 17000;
+GMEM_NEXT_INSTANCE_ID = 194;
+GMEM_LOOP_LENGTH_BASE = 8451;
+GMEM_INSTANCE_ID = 29001;
+GMEM_UI_COMMAND = 29000;
+GMEM_DATA_LENGTH = 29002;
+GMEM_AFFICHAGE_CONSOLE_DEBUG = 16998;
+GMEM_PLAYBACK_MODE = 1;
+GMEM_MESSAGE_END = 18000;
 
 // Types de loops
 LOOP_TYPE_RECORD = 0;
@@ -73,15 +74,15 @@ LOOP_TYPE_MONITOR = 3;
 LOOP_TYPE_UNUSED = 4;
 
 // Codes de débogage
-DEBUG_NONE = 0;
 DEBUG_FIND_NOTE_START = 1;
+DEBUG_SAVE_NOTE_DATA = 7;
+DEBUG_NONE = 0;
 DEBUG_FIND_NOTE_FOUND = 2;
 DEBUG_SAVE_START = 4;
 DEBUG_SAVE_NOTE_END = 8;
-DEBUG_SAVE_NOTE_DATA = 7;
-DEBUG_SAVE_NO_DATA = 5;
-DEBUG_FIND_NOTE_NONE = 3;
 DEBUG_SAVE_NOTE_START = 6;
+DEBUG_FIND_NOTE_NONE = 3;
+DEBUG_SAVE_NO_DATA = 5;
 
 // Version
 VERSION = "0015";
@@ -92,15 +93,196 @@ DEBUG_AFFICHAGE_CONSOLE = 17100;
 
 // GENERATED_CONSTANTS_END
 
-// Initialisation des valeurs de modulation
-i = 0;
-loop(MODULATION_COUNT,
-  modulation_values[i*2] = slider(i + 4);     // Start value
-  modulation_values[i*2 + 1] = slider(i + 4); // End value (initialement égal à start)
-  i += 1;
+// Fonction pour écrire dans le journal
+function write_log(msg_type, value1, value2)
+(
+  log_pos = gmem[GMEM_LOG_LENGTH];
+  offset = GMEM_LOG_DATA + log_pos * 3;
+  gmem[offset] = msg_type;
+  gmem[offset + 1] = value1;
+  gmem[offset + 2] = value2;
+  gmem[GMEM_LOG_LENGTH] = log_pos + 1;
 );
 
-// Variables locales pour la mémoire
+// Calculer le nombre maximum d'unités à partir de maxmem
+max_units = floor(32000000 / UNIT_SIZE);  // maxmem est en octets, on divise par la taille d'une unité
+
+// Variable pour stocker l'offset en cours pour cette instance
+current_offset = 0; // Valeur en secondes
+has_offset = 0;     // Flag indiquant si un offset valide est disponible
+
+// Définition des fonctions
+function get_unique_instance_id()
+(
+  // Lire le prochain ID disponible
+  next_id = gmem[GMEM_NEXT_INSTANCE_ID];
+  
+  // Si c'est la première fois, initialiser à 0
+  (next_id == 0) ? next_id = 0;
+  
+  // Incrémenter pour la prochaine instance
+  gmem[GMEM_NEXT_INSTANCE_ID] = (next_id + 1) % 64;
+  
+  // Retourner l'ID attribué
+  next_id;
+);
+
+// Attribuer un identifiant unique à cette instance
+instance_id = get_unique_instance_id();  // Un identifiant entre 0 et 63
+
+function init_modulation_values()
+(
+  // Initialiser toutes les valeurs à 0
+  i = 0;
+  loop(MODULATION_SIZE,
+    modulation_values[i] = 0;
+    i += 1;
+  );
+);
+
+function get_modulation_start(index)
+(
+  (index >= 0 && index < MODULATION_COUNT) ? modulation_values[index * 2] : 0;
+);
+
+function get_modulation_end(index)
+(
+  (index >= 0 && index < MODULATION_COUNT) ? modulation_values[index * 2 + 1] : 0;
+);
+
+function set_modulation_start(index, value)
+(
+  (index >= 0 && index < MODULATION_COUNT) ? (
+    modulation_values[index * 2] = value;
+    1;
+  ) : 0;
+);
+
+function set_modulation_end(index, value)
+(
+  (index >= 0 && index < MODULATION_COUNT) ? (
+    modulation_values[index * 2 + 1] = value;
+    1;
+  ) : 0;
+);
+
+function get_record_monitor_loops_mode()
+(
+  gmem[GMEM_RECORD_MONITOR_MODE];
+);
+
+function get_playback_mode()
+(
+  gmem[GMEM_PLAYBACK_MODE];
+);
+
+function update_stats()
+(
+  // Base pour les statistiques de cette instance
+  stats_base = GMEM_STATS_BASE + instance_id * 3;
+  
+  // Calculer la mémoire utilisée en Mo (8 octets par échantillon car format 64 bits)
+  memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
+  
+  // Calculer le temps restant en secondes (assurons-nous que c'est défini)
+  memory_left_seconds = time_left;
+  
+  // Compter le nombre de notes actives (vérifier à la fois loop_type et note_length)
+  notes_count = 0;
+  active_instance = 0;
+  i = 0;
+  loop(NUM_NOTES,
+    (note_length[i] > 0) ? (
+      notes_count += 1;
+      // Activation automatique des notes ayant du contenu
+      (loop_type[i] < 0) ? loop_type[i] = 0;  // Définir comme RECORD par défaut
+    );
+    
+    (loop_type[i] >= 0 || is_playing[i] > 0 || note_length[i] > 0) ? active_instance = 1;
+    i += 1;
+  );
+  
+  // Écrire que cette instance est active si un des tableaux est utilisé
+  (next_free_unit[0] > 0 || notes_count > 0) ? active_instance = 1;
+  
+  // Si on a des échantillons ou des notes, indiquer que l'instance est active
+  gmem[stats_base] = active_instance ? memory_used_mb : 0;
+  gmem[stats_base + 1] = memory_left_seconds;
+  gmem[stats_base + 2] = notes_count;
+  
+  // Debug info
+  (active_instance) ? (
+    sprintf(debug_str2, "%sInstance #%d ACTIVE, %d notes\n", debug_str2, instance_id, notes_count);
+  ) : (
+    sprintf(debug_str2, "%sInstance #%d inactive\n", debug_str2, instance_id);
+  );
+);
+
+function cc7ToGain(ccVal)
+(
+  dB = (ccVal - 64) * (20.0/64.0);
+  10^(dB/20.0);
+);
+
+function cc10ToPan(ccVal)
+(
+  ccVal / 127.0;
+);
+
+function getNoteIndex(note)
+(
+  (note >= 0 && note < 128) ? note : -1;
+);
+
+function startRecording(note, mode)
+(
+  // En mode PLAYBACK, on n'enregistre pas
+  (get_playback_mode() == 1) ? (
+    sprintf(current_display, "Mode PLAYBACK: enregistrement désactivé");
+    0; // Ne rien faire
+  ) : (
+    note_length[note] = 0;
+    units_count[note] = 1;
+    is_recording[note] = 1;
+    is_playing[note] = 0;
+    read_pos[note] = 0;
+    rec_mode[note] = mode;
+    nu = next_free_unit[0];
+    (nu >= max_units) ? (
+      is_recording[note] = 0;
+      note_start[note] = 0;
+      strcpy(current_display, "Memo saturée: impossible rec");
+    ) : (
+      note_start[note] = nu * UNIT_SIZE;
+      next_free_unit[0] = nu + 1;
+    );
+  );
+);
+
+function expandRecording(note)
+(
+  // En mode PLAYBACK, on n'étend pas l'enregistrement
+  (get_playback_mode() == 1) ? (
+    0; // Ne rien faire
+  ) : (
+    nu = next_free_unit[0];
+    curUnits = units_count[note];
+    (nu < max_units) ? (
+      units_count[note] = curUnits + 1;
+      next_free_unit[0] = nu + 1;
+    ) : (
+      is_recording[note] = 0;
+      strcpy(current_display, "Memo full en cours d'enregistrement");
+    );
+  );
+);
+
+// Variables pour la sauvegarde/chargement
+save_state = 0;              // 0=idle, 1=en cours de sauvegarde/chargement
+save_current_position = 0;   // Position actuelle dans les données
+memory_size = 0;            // Taille totale de la mémoire utilisée
+
+// Initialisation des variables
 debug_str     = 0;
 debug_str2    = 50; // Nouveau buffer pour le débogage
 time_left_str = 100;
@@ -119,6 +301,7 @@ the_memory    = modulation_values + MODULATION_SIZE;
 // Variable unique pour la longueur temporaire
 temp_block_length = 0;
 
+// Initialisation des tableaux
 i = 0;
 loop(NUM_NOTES,
   note_start[i] = 0;
@@ -198,26 +381,103 @@ target_instance = gmem[GMEM_INSTANCE_ID];
 
 // Vérifier si on a une commande de sauvegarde et si elle est destinée à cette instance
 (command == 1 && target_instance == instance_id && gmem[GMEM_WRITING_RIGHT] == 1) ? (
-    write_log(LOG_STATE, save_state, 0);  // État initial
-    
-    // Si on n'est pas déjà en train de sauvegarder, commencer le processus
+    // Si on n'a pas encore commencé la sauvegarde
     (save_state == 0) ? (
-        prepare_save();
+        // Calculer la taille totale de la mémoire utilisée
+        memory_size = the_memory + (next_free_unit[0] * UNIT_SIZE);
+        
+        // Écrire la taille dans gmem
+        gmem[GMEM_DATA_LENGTH] = memory_size;
+        
+        // Initialiser les variables de sauvegarde
+        save_current_position = 0;
+        save_state = 1;
+        
+        // Rendre le contrôle à l'UI
+        gmem[GMEM_WRITING_RIGHT] = 0;
+    ) : (save_state == 1) ? (
+        // Si on a encore des données à envoyer
+        (save_current_position < memory_size) ? (
+            // Calculer la taille du prochain bloc
+            block_size = min(30000, memory_size - save_current_position);
+            
+            // Copier le bloc dans gmem
+            i = 0;
+            while (i < block_size) (
+                gmem[GMEM_DATA_START + i] = the_memory[save_current_position + i];
+                i += 1;
+            );
+            
+            // Mettre à jour la position
+            save_current_position += block_size;
+            
+            // Si on a fini, réinitialiser l'état
+            (save_current_position >= memory_size) ? (
+                save_state = 0;
+                save_current_position = 0;
+                // Signaler que la sauvegarde est terminée
+                gmem[GMEM_SAVE_COMPLETE] = 1;
+            );
+            
+            // Rendre le contrôle à l'UI
+            gmem[GMEM_WRITING_RIGHT] = 0;
+        ) : (
+            // Si on n'a plus de données à envoyer, réinitialiser l'état
+            save_state = 0;
+            save_current_position = 0;
+            gmem[GMEM_WRITING_RIGHT] = 0;
+        );
     );
-    
-    // Traiter une étape de la sauvegarde
-    process_save_request();
 ) : (command == 2 && target_instance == instance_id && gmem[GMEM_WRITING_RIGHT] == 1) ? (
-  // Commande de chargement
-  sprintf(debug_str, "Commande reçue: chargement instance %d", instance_id);
-  
-  // Traiter la demande de chargement
-  process_load_request();
+    // Si on n'a pas encore commencé le chargement
+    (save_state == 0) ? (
+        // Lire la taille totale de la mémoire
+        memory_size = gmem[GMEM_DATA_LENGTH];
+        
+        // Initialiser les variables de chargement
+        save_current_position = 0;
+        save_state = 1;
+        
+        // Rendre le contrôle à l'UI
+        gmem[GMEM_WRITING_RIGHT] = 0;
+    ) : (save_state == 1) ? (
+        // Si on a encore des données à charger
+        (save_current_position < memory_size) ? (
+            // Calculer la taille du prochain bloc
+            block_size = min(30000, memory_size - save_current_position);
+            
+            // Copier le bloc depuis gmem
+            i = 0;
+            while (i < block_size) (
+                the_memory[save_current_position + i] = gmem[GMEM_DATA_START + i];
+                i += 1;
+            );
+            
+            // Mettre à jour la position
+            save_current_position += block_size;
+            
+            // Si on a fini, réinitialiser l'état
+            (save_current_position >= memory_size) ? (
+                save_state = 0;
+                save_current_position = 0;
+                // Mettre à jour next_free_unit en divisant par UNIT_SIZE
+                next_free_unit[0] = ceil(memory_size / UNIT_SIZE);
+            );
+            
+            // Rendre le contrôle à l'UI
+            gmem[GMEM_WRITING_RIGHT] = 0;
+        ) : (
+            // Si on n'a plus de données à charger, réinitialiser l'état
+            save_state = 0;
+            save_current_position = 0;
+            gmem[GMEM_WRITING_RIGHT] = 0;
+        );
+    );
 );
 
 // Debug: afficher les valeurs importantes
-sprintf(debug_str2, "save_state=%d, save_note=%d, save_pos=%d", 
-        save_state, save_active_note, save_current_position);
+sprintf(debug_str2, "save_state=%d, save_pos=%d, memory_size=%d", 
+        save_state, save_current_position, memory_size);
 
 // Mise à jour des sliders de modulation
 i = 0;
