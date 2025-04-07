@@ -49,7 +49,7 @@ M.LOOP_TYPES = {"RECORD", "OVERDUB", "PLAY", "MONITOR", "UNUSED"}
 M.GMEM = {
     -- Modes de fonctionnement
     RECORD_MONITOR_MODE = 0,     -- Mode d'enregistrement des loops MONITOR
-    PLAYBACK_MODE = 1,          -- Mode LIVE/PLAYBACK
+    PLAYBACK_MODE = 1,          -- Mode LIVE(0)/PLAYBACK (1)
     
     -- Statistiques et gestion des instances
     STATS_BASE = 2,             -- Base pour les statistiques (64 instances * 3 valeurs)

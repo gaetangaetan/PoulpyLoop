@@ -184,8 +184,6 @@ function update_stats()
   // Calculer la mémoire utilisée en Mo (8 octets par échantillon car format 64 bits)
   memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
   
-  // Calculer le temps restant en secondes (assurons-nous que c'est défini)
-  memory_left_seconds = time_left;
   
   // Compter le nombre de notes actives (vérifier à la fois loop_type et note_length)
   notes_count = 0;
@@ -206,8 +204,9 @@ function update_stats()
   (next_free_unit[0] > 0 || notes_count > 0) ? active_instance = 1;
   
   // Si on a des échantillons ou des notes, indiquer que l'instance est active
+  //sprintf(current_display, "écriture gmem de l'adresse %d à %d",stats_base,stats_base+2); 
   gmem[stats_base] = active_instance ? memory_used_mb : 0;
-  gmem[stats_base + 1] = memory_left_seconds;
+  gmem[stats_base + 1] = time_left;
   gmem[stats_base + 2] = notes_count;
 );
 
@@ -320,22 +319,14 @@ strcpy(time_left_str, "Loading...");
 volumeFactor = 1.0;
 panFactor    = 0.5;
 mode = 0;
-monitoring = 1; // Par défaut, le monitoring est activé (ON)
+monitoring = 0; // Par défaut, le monitoring est désactivé (OFF)
 
-last_loop_type = -2;
-last_loop_mode = -2;
-last_volume = -1.0;
-last_pan = -1.0;
-last_monitoring = -1;
-
-// Variable pour stocker le dernier pitch
-last_pitch = 0.5; // Valeur par défaut (milieu)
 
 // Variables pour la synchronisation des offsets
 using_offsets = 0;
 offset_position = 0;
 measure_duration = 0;
-play_state = 0;
+// play_state = 0; // désactivée car read only
 track_id_found = -1;
 
 // Variables pour la sauvegarde/chargement des données
@@ -349,21 +340,10 @@ save_note_length = 0;       // Longueur de la note en cours de sauvegarde
 @slider
 fade_samples = slider1;
 // Mettre à jour gmem avec l'état du monitoring à l'arrêt
-gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
+//gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
 
-
-// Initialiser les valeurs de modulation si ce n'est pas déjà fait
-// TODO : vérifier le bloc suivant. Le gardien me semble foireux
-(modulation_values == 0) ? (
-  i = 0;
-  loop(MODULATION_COUNT,
-    modulation_values[i*2] = slider(i + 4);     // Start value
-    modulation_values[i*2 + 1] = slider(i + 4); // End value (initialement égal à start)
-    i += 1;
-  );
-);
 
 // Synchroniser le slider avec gmem
 // TODO : vérifier qu'on recopie bien cette valeur dans monitoring
@@ -530,7 +510,7 @@ play_position = play_position_samples / srate;
 
 // Détection simple de l'état de lecture
 prev_play_state = play_state;
-play_state = (play_state > 0) ? 1 : 0;
+//play_state = (play_state > 0) ? 1 : 0;
 
 // Lire l'offset pour cette instance depuis la mémoire partagée
 sync_base = GMEM_MIDI_SYNC_DATA_BASE + instance_id * 3;
@@ -557,7 +537,7 @@ while (
     );
 
     (status == $xB0) ? (
-      (idx >= 0) ? (
+      ((idx >= 0)&& play_state) ? (
         (msg2 == 7) ? (
             volumeFactor = cc7ToGain(msg3);
         ) : (msg2 == 9) ? (
@@ -568,6 +548,7 @@ while (
             mode = msg3;
         ) : (msg2 == 11) ? (
             monitoring = msg3 > 0 ? 1 : 0;
+            //sprintf(current_display, "midi message, monitoring : %d", monitoring)
         ) : (msg2 == 19) ? (
             temp_block_length = msg3 * 128;
         ) : (msg2 == 20) ? (
@@ -589,11 +570,13 @@ while (
       (idx >= 0) ? (
         // Pour les blocs RECORD ou MONITOR, afficher la longueur attendue
         ((vel == 1 || vel == 4) && temp_block_length > 0) ? (
-          sprintf(current_display, "Longueur attendue: %.1f dixièmes de seconde", temp_block_length);
+          temp_block_length = temp_block_length;
+          //sprintf(current_display, "Longueur attendue: %.1f dixièmes de seconde", temp_block_length);
         );
 
         // Stocker la position de début de la note dans gmem
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
+        sprintf(current_display, "écriture gmem de l'adresse %d à %d",note_pos_index,note_pos_index); 
         gmem[note_pos_index] = play_position + offset / srate;
         
         // Afficher les valeurs de modulation pour cette note
@@ -635,14 +618,14 @@ while (
             // En mode LIVE, comportement normal
             startRecording(idx, mode);
             loop_type[idx] = 0;
-            sprintf(current_display, "Rec note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+            //sprintf(current_display, "Rec note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
           );
         )
         : (vel == 2) ? ( // PLAY
           (note_length[idx] > 0) ? (
             is_playing[idx] = 1;
             read_pos[idx] = 0;
-            sprintf(current_display, "PLAY: note=%d pos=0/%d", note, note_length[idx]);
+            //sprintf(current_display, "PLAY: note=%d pos=0/%d", note, note_length[idx]);
             is_recording[idx] = 0;
             loop_type[idx] = 1;
           ) : sprintf(current_display, "Pas de sample pour %d", note);
@@ -719,7 +702,8 @@ while (
           // Envoyer CC09 = 64 pour un pitch de 0
           midisend(offset, $xB0, 9, 64);
         );
-        strcpy(current_display, "Note off");
+        //strcpy(current_display, "Note off");
+        monitoring = 0;
       );
     );
     offset += 1;
@@ -872,7 +856,8 @@ loop(NUM_NOTES,
 
 // Monitoring avec pan sinusoïdal (uniquement si une boucle est active, qu'on n'est pas en mode PLAYBACK
 // ET que la lecture est active OU que le monitoring à l'arrêt n'est pas activé)
-(monitoring && any_loop_active && playback_mode == 0 && (play_state || !slider3)) ? (
+(monitoring && any_loop_active && (playback_mode == 0) && (play_state || !slider3)) ? (
+  //sprintf(current_display, "monitoring pan sinusoidal");
   (mode == 0) ? ( // Mono 
     monL = inL * volumeFactor * gainL;
     monR = inL * volumeFactor * gainR;  // Même signal en mono
@@ -880,6 +865,8 @@ loop(NUM_NOTES,
     monL = inL * volumeFactor * gainL;
     monR = inR * volumeFactor * gainR;
   );
+) : (//sprintf(current_display, "stop monitoring pan sinusoidal"); 
+dummy = 1;
 );
 
 // Complètement réorganiser la logique de sortie pour éviter les additifs
