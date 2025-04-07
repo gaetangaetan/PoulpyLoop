@@ -31,40 +31,40 @@ ext_noinit = 1;
 // Ne pas modifier manuellement
 
 // Constantes de base
-UNIT_SIZE = 262144;
+MODULATION_COUNT = 10;
+MODULATION_SIZE = 20;
 NUM_NOTES = 128;
 BLOCK_SIZE = 1024;
-MODULATION_SIZE = 20;
-MODULATION_COUNT = 10;
+UNIT_SIZE = 262144;
 
 // Indices GMEM
-GMEM_DEBUG_CODE = 29006;
+GMEM_RECORD_MONITOR_MODE = 0;
+GMEM_PLAYBACK_MODE = 1;
+GMEM_STATS_BASE = 2;
+GMEM_NEXT_INSTANCE_ID = 194;
 GMEM_MONITORING_STOP_BASE = 195;
-GMEM_MIDI_SYNC_DATA_BASE = 16001;
-GMEM_LOG_START = 29008;
-GMEM_DATA_BUFFER = 30000;
-GMEM_DATA_SIZE = 29011;
 GMEM_NOTE_START_POS_BASE = 259;
-GMEM_WRITING_RIGHT = 29003;
+GMEM_LOOP_LENGTH_BASE = 8451;
 GMEM_FORCE_ANALYZE = 16000;
+GMEM_MIDI_SYNC_DATA_BASE = 16001;
+GMEM_AFFICHAGE_CONSOLE_DEBUG = 16998;
 GMEM_MESSAGE_WRITE_POS = 16999;
+GMEM_MESSAGE_BASE = 17000;
+GMEM_MESSAGE_END = 18000;
+GMEM_UI_COMMAND = 29000;
+GMEM_INSTANCE_ID = 29001;
+GMEM_DATA_LENGTH = 29002;
+GMEM_WRITING_RIGHT = 29003;
+GMEM_TOTAL_LENGTH = 29004;
 GMEM_SAVE_COMPLETE = 29005;
-GMEM_DATA_BUFFER_END = 59999;
+GMEM_DEBUG_CODE = 29006;
+GMEM_DEBUG_VALUE = 29007;
+GMEM_LOG_START = 29008;
 GMEM_LOG_LENGTH = 29009;
 GMEM_LOG_DATA = 29010;
-GMEM_RECORD_MONITOR_MODE = 0;
-GMEM_DEBUG_VALUE = 29007;
-GMEM_TOTAL_LENGTH = 29004;
-GMEM_STATS_BASE = 2;
-GMEM_MESSAGE_BASE = 17000;
-GMEM_NEXT_INSTANCE_ID = 194;
-GMEM_LOOP_LENGTH_BASE = 8451;
-GMEM_INSTANCE_ID = 29001;
-GMEM_UI_COMMAND = 29000;
-GMEM_DATA_LENGTH = 29002;
-GMEM_AFFICHAGE_CONSOLE_DEBUG = 16998;
-GMEM_PLAYBACK_MODE = 1;
-GMEM_MESSAGE_END = 18000;
+GMEM_DATA_SIZE = 29011;
+GMEM_DATA_BUFFER = 30000;
+GMEM_DATA_BUFFER_END = 59999;
 
 // Types de loops
 LOOP_TYPE_RECORD = 0;
@@ -74,15 +74,15 @@ LOOP_TYPE_MONITOR = 3;
 LOOP_TYPE_UNUSED = 4;
 
 // Codes de débogage
-DEBUG_FIND_NOTE_START = 1;
-DEBUG_SAVE_NOTE_DATA = 7;
 DEBUG_NONE = 0;
+DEBUG_FIND_NOTE_START = 1;
 DEBUG_FIND_NOTE_FOUND = 2;
-DEBUG_SAVE_START = 4;
-DEBUG_SAVE_NOTE_END = 8;
-DEBUG_SAVE_NOTE_START = 6;
 DEBUG_FIND_NOTE_NONE = 3;
+DEBUG_SAVE_START = 4;
 DEBUG_SAVE_NO_DATA = 5;
+DEBUG_SAVE_NOTE_START = 6;
+DEBUG_SAVE_NOTE_DATA = 7;
+DEBUG_SAVE_NOTE_END = 8;
 
 // Version
 VERSION = "0015";
@@ -209,13 +209,6 @@ function update_stats()
   gmem[stats_base] = active_instance ? memory_used_mb : 0;
   gmem[stats_base + 1] = memory_left_seconds;
   gmem[stats_base + 2] = notes_count;
-  
-  // Debug info
-  (active_instance) ? (
-    sprintf(debug_str2, "%sInstance #%d ACTIVE, %d notes\n", debug_str2, instance_id, notes_count);
-  ) : (
-    sprintf(debug_str2, "%sInstance #%d inactive\n", debug_str2, instance_id);
-  );
 );
 
 function cc7ToGain(ccVal)
@@ -283,8 +276,7 @@ save_current_position = 0;   // Position actuelle dans les données
 memory_size = 0;            // Taille totale de la mémoire utilisée
 
 // Initialisation des variables
-debug_str     = 0;
-debug_str2    = 50; // Nouveau buffer pour le débogage
+instance_memory =0; // représentation de la mémoire dans son ensemble pour opérations de sauvegarde et chargement
 time_left_str = 100;
 current_display= 200;
 note_start    = 300;
@@ -324,8 +316,6 @@ loop(NUM_NOTES,
 
 //strcpy(current_display, "Sampler init OK");
 strcpy(time_left_str, "Loading...");
-strcpy(debug_str, "");
-strcpy(debug_str2, "");
 
 volumeFactor = 1.0;
 panFactor    = 0.5;
@@ -362,7 +352,10 @@ fade_samples = slider1;
 gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
+
+
 // Initialiser les valeurs de modulation si ce n'est pas déjà fait
+// TODO : vérifier le bloc suivant. Le gardien me semble foireux
 (modulation_values == 0) ? (
   i = 0;
   loop(MODULATION_COUNT,
@@ -373,6 +366,7 @@ gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 );
 
 // Synchroniser le slider avec gmem
+// TODO : vérifier qu'on recopie bien cette valeur dans monitoring
 slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
 // Traitement des commandes provenant de PoulpyLoopyUI
@@ -387,11 +381,16 @@ target_instance = gmem[GMEM_INSTANCE_ID];
         memory_size = the_memory + (next_free_unit[0] * UNIT_SIZE);
         
         // Écrire la taille dans gmem
-        gmem[GMEM_DATA_LENGTH] = memory_size;
+        gmem[GMEM_DATA_SIZE] = memory_size;
+        
+        // Debug: afficher les informations de mémoire
+        sprintf(current_display, "Save: mem_size=%d the_mem=%d next=%d unit=%d gmem_size=%d", 
+          memory_size, the_memory, next_free_unit[0], UNIT_SIZE, gmem[GMEM_DATA_SIZE]);
         
         // Initialiser les variables de sauvegarde
         save_current_position = 0;
-        save_state = 1;
+        save_state = 1; 
+
         
         // Rendre le contrôle à l'UI
         gmem[GMEM_WRITING_RIGHT] = 0;
@@ -402,19 +401,20 @@ target_instance = gmem[GMEM_INSTANCE_ID];
             block_size = min(30000, memory_size - save_current_position);
             
             // Copier le bloc dans gmem
-            i = 0;
-            while (i < block_size) (
-                gmem[GMEM_DATA_START + i] = the_memory[save_current_position + i];
+            
+              i = 0;
+              while (i < block_size) (
+                gmem[GMEM_DATA_BUFFER + i] = instance_memory[save_current_position + i];
                 i += 1;
-            );
+                );
             
             // Mettre à jour la position
             save_current_position += block_size;
             
             // Si on a fini, réinitialiser l'état
             (save_current_position >= memory_size) ? (
-                save_state = 0;
-                save_current_position = 0;
+                //save_state = 0;
+                //save_current_position = 0;
                 // Signaler que la sauvegarde est terminée
                 gmem[GMEM_SAVE_COMPLETE] = 1;
             );
@@ -432,7 +432,11 @@ target_instance = gmem[GMEM_INSTANCE_ID];
     // Si on n'a pas encore commencé le chargement
     (save_state == 0) ? (
         // Lire la taille totale de la mémoire
-        memory_size = gmem[GMEM_DATA_LENGTH];
+        memory_size = gmem[GMEM_DATA_SIZE];
+        
+        // Debug: afficher les informations de chargement
+        sprintf(current_display, "Load: mem_size=%d the_mem=%d next=%d unit=%d gmem_size=%d", 
+          memory_size, the_memory, next_free_unit[0], UNIT_SIZE, gmem[GMEM_DATA_SIZE]);
         
         // Initialiser les variables de chargement
         save_current_position = 0;
@@ -446,10 +450,14 @@ target_instance = gmem[GMEM_INSTANCE_ID];
             // Calculer la taille du prochain bloc
             block_size = min(30000, memory_size - save_current_position);
             
+            // Debug: afficher la progression du chargement
+            sprintf(current_display, "Loading: pos=%d/%d block=%d", 
+              save_current_position, memory_size, block_size);
+            
             // Copier le bloc depuis gmem
             i = 0;
             while (i < block_size) (
-                the_memory[save_current_position + i] = gmem[GMEM_DATA_START + i];
+                the_memory[save_current_position + i] = gmem[GMEM_DATA_BUFFER + i];
                 i += 1;
             );
             
@@ -462,6 +470,10 @@ target_instance = gmem[GMEM_INSTANCE_ID];
                 save_current_position = 0;
                 // Mettre à jour next_free_unit en divisant par UNIT_SIZE
                 next_free_unit[0] = ceil(memory_size / UNIT_SIZE);
+                
+                // Debug: afficher les informations finales
+                sprintf(current_display, "Loaded: total=%d units=%d", 
+                  memory_size, next_free_unit[0]);
             );
             
             // Rendre le contrôle à l'UI
@@ -475,23 +487,10 @@ target_instance = gmem[GMEM_INSTANCE_ID];
     );
 );
 
-// Debug: afficher les valeurs importantes
-sprintf(debug_str2, "save_state=%d, save_pos=%d, memory_size=%d", 
-        save_state, save_current_position, memory_size);
-
 // Mise à jour des sliders de modulation
 i = 0;
 loop(NUM_NOTES,
   (loop_type[i] >= 0) ? (
-    // Debug pour les blocs MONITOR
-    (loop_type[i] == 3) ? (
-      sprintf(debug_str2, "MONITOR - Note %d:\n", i);
-      sprintf(debug_str2, "%stype=%d, is_playing=%d, is_recording=%d\n", 
-        debug_str2, loop_type[i], is_playing[i], is_recording[i]);
-      sprintf(debug_str2, "%spos=%.1f, temp_length=%.1f\n", 
-        debug_str2, read_pos[i] / srate * 10, temp_block_length);
-    );
-    
     // Calculer le pourcentage de progression dans la loop
     progress = 0;
     
@@ -499,11 +498,6 @@ loop(NUM_NOTES,
     ((is_recording[i] || loop_type[i] == 3) && temp_block_length > 0) ? (
       progress = (read_pos[i] / srate * 10) / temp_block_length;
       progress = min(progress, 1); // S'assurer que progress ne dépasse pas 1
-      
-      // Debug pour les blocs MONITOR
-      (loop_type[i] == 3) ? (
-        sprintf(debug_str2, "%sprogress=%.3f\n", debug_str2, progress);
-      );
     ) : (
       // Pour les autres blocs, utiliser note_length
       (note_length[i] > 0) ? (
@@ -520,12 +514,6 @@ loop(NUM_NOTES,
         
         // Interpolation linéaire
         current_val = start_val + (end_val - start_val) * progress;
-        
-        // Debug pour les blocs MONITOR (premier paramètre seulement)
-        (loop_type[i] == 3 && j == 0) ? (
-          sprintf(debug_str2, "%sMod 1: %.1f -> %.1f (current=%.1f)", 
-            debug_str2, start_val, end_val, current_val);
-        );
         
         // Mise à jour du slider correspondant
         slider(j + 4) = current_val;
@@ -553,11 +541,6 @@ measure_duration = gmem[sync_base + 2];
 // Mettre à jour la variable using_offsets pour l'affichage dans l'interface
 using_offsets = (offset_position > 0 && measure_duration > 0) ? 1 : 0;
 
-// Message de débogage
-/*sprintf(debug_str, "État: %s | Track: %d | Offset: %.3f | Durée: %.3f", 
-         play_state ? "LECTURE" : "ARRÊTÉ",
-         track_id, offset_position, measure_duration);
-*/
 // Variable pour suivre si des notes ont été traitées dans ce bloc
 midi_notes_processed = 0;
 
@@ -606,23 +589,18 @@ while (
       (idx >= 0) ? (
         // Pour les blocs RECORD ou MONITOR, afficher la longueur attendue
         ((vel == 1 || vel == 4) && temp_block_length > 0) ? (
-          sprintf(debug_str2, "Longueur attendue: %.1f dixièmes de seconde", temp_block_length);
+          sprintf(current_display, "Longueur attendue: %.1f dixièmes de seconde", temp_block_length);
         );
 
-        // Debug: afficher le type de note reçue
-        sprintf(debug_str2, "%s\nNote ON: idx=%d, vel=%d", debug_str2, idx, vel);
-        
         // Stocker la position de début de la note dans gmem
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
         gmem[note_pos_index] = play_position + offset / srate;
         
         // Afficher les valeurs de modulation pour cette note
-        sprintf(debug_str, "\n\nModulations pour note %d:", idx);
         i = 0;
         loop(MODULATION_COUNT,
           start_val = get_modulation_start(i);
           end_val = get_modulation_end(i);
-          sprintf(debug_str, "%s\nMod %d: %.2f -> %.2f", debug_str, i+1, start_val, end_val);
           
           // Mettre à jour les sliders avec les valeurs de début
           slider(i + 4) = start_val;
@@ -663,25 +641,18 @@ while (
         : (vel == 2) ? ( // PLAY
           (note_length[idx] > 0) ? (
             is_playing[idx] = 1;
-            
-            // Ne plus appliquer l'offset ici, juste commencer au début
             read_pos[idx] = 0;
-            sprintf(debug_str2, "PLAY: note=%d pos=0/%d", note, note_length[idx]);
-            
+            sprintf(current_display, "PLAY: note=%d pos=0/%d", note, note_length[idx]);
             is_recording[idx] = 0;
             loop_type[idx] = 1;
-          ) : sprintf(current_display, "Pas de sample pour %d", note)
+          ) : sprintf(current_display, "Pas de sample pour %d", note);
         )
         : (vel == 3) ? ( // OVERDUB
           (playback_mode == 1) ? (
-            // En mode PLAYBACK, on lit la loop OVERDUB si elle existe
             (note_length[idx] > 0) ? (
               is_playing[idx] = 1;
-              
-              // Ne plus appliquer l'offset ici non plus
               read_pos[idx] = 0;
-              sprintf(debug_str2, "OVERDUB: note=%d pos=0/%d", note, note_length[idx]);
-              
+              sprintf(current_display, "OVERDUB: note=%d pos=0/%d", note, note_length[idx]);
               is_recording[idx] = playback_mode == 0;
               loop_type[idx] = 2;
             ) : (
@@ -689,38 +660,33 @@ while (
             );
           ) : (
             // En mode LIVE, comportement normal
-            //Si la boucle n'existait pas, on démarre un enregistrement normal.
             (note_length[idx] == 0) ? (
               startRecording(idx, mode);
             ) : (
-              is_recording[idx] = 1;  // Activer l'enregistrement
-              read_pos[idx] = 0;      // Réinitialisation de la position de lecture
+              is_recording[idx] = 1;
+              read_pos[idx] = 0;
             );
             loop_type[idx] = 2;
-            is_playing[idx] = 1;      // Activer la lecture en mode OVERDUB
+            is_playing[idx] = 1;
             sprintf(current_display, "Overdub note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
           );
         )
         : (vel == 4) ? ( // MONITOR
           (playback_mode == 1) ? (
-            // En mode PLAYBACK, on lit la loop MONITOR si elle existe
             (note_length[idx] > 0) ? (
               is_playing[idx] = 1;
               read_pos[idx] = 0;
-              is_recording[idx] = 0; // Pas d'enregistrement en mode PLAYBACK
-              loop_type[idx] = 3; // Garder le type MONITOR
-              sprintf(debug_str2, "%s\nMONITOR: playback mode", debug_str2);
+              is_recording[idx] = 0;
+              loop_type[idx] = 3;
+              sprintf(current_display, "MONITOR: playback mode");
             );
           ) : (
-            // En mode LIVE, comportement normal
             is_playing[idx] = 1;
             loop_type[idx] = 3;
-            sprintf(debug_str2, "%s\nMONITOR: live mode, type=%d", debug_str2, loop_type[idx]);
+            sprintf(current_display, "MONITOR: live mode, type=%d", loop_type[idx]);
             
-            // Vérifier si on doit enregistrer les loops MONITOR
             record_monitor_mode = get_record_monitor_loops_mode();
             (record_monitor_mode == 1) ? (
-              // Si le mode est activé, on enregistre comme pour RECORD
               startRecording(idx, mode);
             );
           );
@@ -848,7 +814,7 @@ loop(NUM_NOTES,
     );
 
     // Gérer l'enregistrement après la lecture (uniquement en mode LIVE)
-    (playback_mode == 0 && (loop_type[i] == 0 || loop_type[i] == 2 || (loop_type[i] == 3 && get_record_monitor_loops_mode() == 1))) ? (
+    (play_state && playback_mode == 0 && (loop_type[i] == 0 || loop_type[i] == 2 || (loop_type[i] == 3 && get_record_monitor_loops_mode() == 1))) ? (
       // Appliquer volume/pan/mode *COURANTS* avant l'enregistrement
       (mode == 0) ? ( // Mono
         recL = inL * volumeFactor * gainL;
@@ -871,7 +837,12 @@ loop(NUM_NOTES,
         
         // Incrémenter la longueur uniquement pour RECORD ou MONITOR avec enregistrement
         note_length[i] = curLen + 1;
-        (curLen + 1 >= capacity) ? (expandRecording(i));
+        (curLen + 1 >= capacity) ? (
+          expandRecording(i);
+          // Debug: afficher les informations de mémoire
+          sprintf(current_display, "Mem: note=%d start=%d len=%d units=%d next=%d", 
+            i, note_start[i], note_length[i], units_count[i], next_free_unit[0]);
+        );
         
       ) : (  // OVERDUB - ici on ADDITIONNE au lieu de remplacer
         (curLen > 0) ? (  // Seulement si on a déjà du contenu
@@ -954,13 +925,12 @@ gfx_y = 50;
 gfx_set(0.5, 1, 0.5, 1); // Vert pour LIVE
 gfx_drawstr("Mode: LIVE");
 
-// Afficher la longueur attendue si présente
-gfx_x = 10;
-gfx_y = 90;
-gfx_set(1, 1, 1, 1);
-gfx_drawstr(debug_str2);
-
 // Afficher le temps restant
 gfx_x = 10;
-gfx_y = 130;
+gfx_y = 90;
 gfx_drawstr(time_left_str);
+
+// Afficher le message courant
+gfx_x = 10;
+gfx_y = 130;
+gfx_drawstr(current_display);

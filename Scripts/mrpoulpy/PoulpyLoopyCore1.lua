@@ -158,8 +158,10 @@ local function IsLoopNameValid(take, new_name)
     if IsStringEmptyOrWhitespace(new_name) then
         return false, "Le nom de la loop ne peut pas être vide."
     end
+    
     local existing_loops = GetRecordLoopsInFolder(take)
     local current_take_name = GetTakeMetadata(take, "loop_name")
+    
     for _, existing_name in ipairs(existing_loops) do
         if existing_name == new_name and existing_name ~= current_take_name then
             return false, "Ce nom de loop existe déjà dans ce folder."

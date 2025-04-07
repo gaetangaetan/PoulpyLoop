@@ -80,12 +80,13 @@ function M.SaveAudioData()
     end
     
     reaper.ShowConsoleMsg("Instances actives trouvées: " .. #active_instances .. "\n")
+    reaper.ShowConsoleMsg("GMEM_BUFFER = " .. constants.GMEM.DATA_BUFFER .. "\n")
     for i, id in ipairs(active_instances) do
         reaper.ShowConsoleMsg("  Instance #" .. i .. " : ID=" .. id .. "\n")
     end
     
     -- Écrire le nombre d'instances
-    file:write(string.pack("<I4", #active_instances))
+    file:write(string.pack("<l", #active_instances))
     
     -- Pour chaque instance active
     for _, instance_id in ipairs(active_instances) do
@@ -106,33 +107,54 @@ function M.SaveAudioData()
         end
         
         -- Lire la taille de la mémoire utilisée (en nombre d'unités)
-        reaper.ShowConsoleMsg("\nGMEM.DATA_SIZE: " .. constants.GMEM.DATA_SIZE)
-        local next_free_unit = reaper.gmem_read(constants.GMEM.DATA_SIZE)
+        
+        local instance_data_size = reaper.gmem_read(constants.GMEM.DATA_SIZE)
+        reaper.ShowConsoleMsg("\ninstance_data_size: " .. instance_data_size)
         
         -- Écrire la taille dans le fichier
-        file:write(string.pack("<I4", next_free_unit))
-        
+        file:write(string.pack("<d", instance_data_size))
+
+                -- Attendre que l'instance soit prête avec un timeout de 5 secondes
+                start_time = os.clock()
+                while reaper.gmem_read(constants.GMEM.WRITING_RIGHT) == 1 do
+                    reaper.defer(function() end)
+                    if os.clock() - start_time > 5.0 then  -- 5 secondes de timeout
+                        reaper.ShowMessageBox("Timeout lors de la sauvegarde. L'instance ne répond pas.", "Erreur", 0)
+                        file:close()
+                        return
+                    end
+                end
         -- Lire et écrire les données par blocs de 30000 valeurs
-        local total_values = next_free_unit  -- Nombre de valeurs à lire
-        local remaining_values = total_values
+        local remaining_values = instance_data_size -- On initialise le nombre de valeurs à restantes à la taille totale de la mémoire utilisée par l'instance
         local current_pos = constants.GMEM.DATA_BUFFER
         
         while remaining_values > 0 do
             local block_size = math.min(30000, remaining_values)
             
+            reaper.ShowConsoleMsg("remaining values = " .. remaining_values .. "\n")
+            
+            
             -- Lire le bloc de données
-            local data = {}
-            for i = 0, block_size - 1 do
-                data[i + 1] = reaper.gmem_read(current_pos + i)
-            end
+            --local data = {}
+            --for i = 0, block_size - 1 do
+            --    data[i + 1] = reaper.gmem_read(current_pos + i)
+            --end
             
             -- Écrire le bloc dans le fichier
-            for _, value in ipairs(data) do
+            --for _, value in ipairs(data) do
+            --    file:write(string.pack("<d", value))
+            --end
+            
+            -- Lire les données dans le buffer et les recopier dans le fichier
+            
+            for i = 0, block_size - 1 do
+                value = reaper.gmem_read(current_pos + i)
                 file:write(string.pack("<d", value))
             end
+                        
             
             remaining_values = remaining_values - block_size
-            current_pos = current_pos + block_size
+            current_pos = constants.GMEM.DATA_BUFFER -- on retourne au début du buffer
             
             -- Attendre que l'instance soit prête pour le prochain bloc avec timeout
             reaper.gmem_write(constants.GMEM.WRITING_RIGHT, 1)
@@ -159,64 +181,76 @@ function M.LoadAudioData()
     reaper.ShowConsoleMsg("\n---------- Début LoadAudioData() ----------\n")
     
     -- Demander le fichier à l'utilisateur
-    local retval, filepath = reaper.JS_Dialog_BrowseForOpenFile("Charger les données audio", "", "", "PoulpyLoop Audio (*.pla)\0*.pla\0")
+    local retval, filepath = reaper.JS_Dialog_BrowseForOpenFiles("Charger les données audio", "", "", "PoulpyLoop Audio (*.pla)\0*.pla\0",0)
     if not retval then return end
     
-    -- Ouvrir le fichier
+    -- Lire le fichier de sauvegarde
     local file = io.open(filepath, "rb")
-    if not file then return end
-    
-    -- Lire le nombre d'instances
-    local num_instances = string.unpack("<I4", file:read(4))
-    
-    reaper.ShowConsoleMsg("Nombre d'instances dans le fichier: " .. num_instances .. "\n")
-    
+    if not file then
+        reaper.ShowConsoleMsg("Erreur: Impossible d'ouvrir le fichier de sauvegarde\n")
+        return
+    end
+
+    -- Lire l'en-tête pour obtenir le nombre d'instances
+    local num_instances = file:read(4)
+    if not num_instances then
+        reaper.ShowConsoleMsg("Erreur: Impossible de lire le nombre d'instances\n")
+        file:close()
+        return
+    end
+    num_instances = string.unpack("<I4", num_instances)
+    reaper.ShowConsoleMsg(string.format("Nombre d'instances dans la sauvegarde: %d\n", num_instances))
+
     -- Pour chaque instance
-    for i = 1, num_instances do
-        -- Lire le nombre d'unités pour cette instance
-        local next_free_unit = string.unpack("<I4", file:read(4))
-        
-        -- Envoyer la commande de chargement à l'instance
-        reaper.gmem_write(constants.GMEM.INSTANCE_ID, i - 1)  -- Les IDs commencent à 0
-        reaper.gmem_write(constants.GMEM.UI_COMMAND, 2)  -- Commande de chargement
-        reaper.gmem_write(constants.GMEM.WRITING_RIGHT, 1)
-        
-        -- Attendre que l'instance soit prête
-        while reaper.gmem_read(constants.GMEM.WRITING_RIGHT) == 1 do
-            reaper.defer(function() end)
+    for i = 0, num_instances - 1 do
+        -- Lire la taille des données de cette instance (8 octets, double précision)
+        local instance_size_data = file:read(8)
+        if not instance_size_data then
+            reaper.ShowConsoleMsg(string.format("Erreur: Impossible de lire la taille de l'instance %d\n", i))
+            break
         end
-        
-        -- Lire et envoyer les données par blocs de 30000 valeurs
-        local total_values = next_free_unit  -- Nombre de valeurs à lire
-        local remaining_values = total_values
-        local current_pos = constants.GMEM.DATA_BUFFER
-        
-        while remaining_values > 0 do
-            local block_size = math.min(30000, remaining_values)
+        local instance_size = string.unpack("<d", instance_size_data)
+        reaper.ShowConsoleMsg(string.format("Instance %d: taille des données = %d octets\n", i, instance_size))
+
+        -- Lire les données de l'instance
+        local instance_data = file:read(instance_size)
+        if not instance_data then
+            reaper.ShowConsoleMsg(string.format("Erreur: Impossible de lire les données de l'instance %d\n", i))
+            break
+        end
+
+        -- Écrire la taille dans gmem
+        reaper.gmem_write(constants.GMEM.DATA_SIZE, instance_size)
+        reaper.ShowConsoleMsg(string.format("Instance %d: taille communiquée à PoulpyLoop = %d\n", i, instance_size))
+
+        -- Copier les données dans gmem par blocs
+        local pos = 1
+        while pos <= instance_size do
+            local block_size = math.min(30000, instance_size - pos + 1)
+            local block = instance_data:sub(pos, pos + block_size - 1)
             
-            -- Lire le bloc depuis le fichier
-            local data = {}
+            -- Copier le bloc dans gmem
             for j = 1, block_size do
-                data[j] = string.unpack("<d", file:read(8))
+                reaper.gmem_write(constants.GMEM.DATA_BUFFER + j - 1, string.byte(block, j))
             end
             
-            -- Écrire le bloc dans gmem
-            for j, value in ipairs(data) do
-                reaper.gmem_write(current_pos + j - 1, value)
-            end
-            
-            remaining_values = remaining_values - block_size
-            current_pos = current_pos + block_size
-            
-            -- Signaler à l'instance qu'on a écrit un bloc
+            -- Signaler à PoulpyLoop qu'il peut lire le bloc
             reaper.gmem_write(constants.GMEM.WRITING_RIGHT, 1)
+            reaper.gmem_write(constants.GMEM.UI_COMMAND, 2)
+            reaper.gmem_write(constants.GMEM.INSTANCE_ID, i)
+            
+            -- Attendre que PoulpyLoop ait lu le bloc
             while reaper.gmem_read(constants.GMEM.WRITING_RIGHT) == 1 do
                 reaper.defer(function() end)
             end
+            
+            pos = pos + block_size
+            reaper.ShowConsoleMsg(string.format("Instance %d: %d/%d octets lus\n", i, pos - 1, instance_size))
         end
     end
-    
+
     file:close()
+    reaper.ShowConsoleMsg("Chargement terminé\n")
     reaper.ShowConsoleMsg("---------- Fin LoadAudioData() ----------\n")
     reaper.ShowMessageBox("Chargement terminé", "Succès", 0)
 end

@@ -457,10 +457,12 @@ local function ProcessMIDINotes(track, return_data)
             local pitch = noteCounters[track_id]
             noteCounters[track_id] = noteCounters[track_id] + 1
             local loop_name = GetTakeMetadata(take, "loop_name") or ""
-            recordLoopPitches[track_id][loop_name] = pitch
+            if loop_name ~= "" then  -- Ne stocker la référence que si le nom est défini
+                recordLoopPitches[track_id][loop_name] = pitch
+            end
             reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 1, false)
         
-        elseif loop_type == "PLAY" then
+        elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
             local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
             local ref_name = reference_loop:match("%d%d%s+(.*)")
             local refNote = 0
@@ -479,29 +481,8 @@ local function ProcessMIDINotes(track, return_data)
                 end
             end
             
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 2, false)
-        
-        elseif loop_type == "OVERDUB" then
-            -- Même logique que pour PLAY
-            local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-            local ref_name = reference_loop:match("%d%d%s+(.*)")
-            local refNote = 0
-            
-            if recordLoopPitches[track_id][reference_loop] then
-                refNote = recordLoopPitches[track_id][reference_loop]
-            elseif ref_name and recordLoopPitches[track_id][ref_name] then
-                refNote = recordLoopPitches[track_id][ref_name]
-            else
-                for name, pitch in pairs(recordLoopPitches[track_id]) do
-                    local name_without_prefix = name:match("%d%d%s+(.*)")
-                    if name_without_prefix and name_without_prefix == ref_name then
-                        refNote = pitch
-                        break
-                    end
-                end
-            end
-            
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 3, false)
+            -- Si aucune référence valide n'est trouvée, utiliser la note 0
+            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, loop_type == "PLAY" and 2 or 3, false)
         
         elseif loop_type == "MONITOR" then
             local pitch = noteCounters[track_id]
@@ -560,8 +541,73 @@ end
 --------------------------------------------------------------------------------
 -- Fonctions de mise à jour des données
 --------------------------------------------------------------------------------
+local function UpdateReferences(take, old_type, new_type)
+    if not take then return end
+    
+    local item = reaper.GetMediaItemTake_Item(take)
+    if not item then return end
+    
+    local track = reaper.GetMediaItem_Track(item)
+    if not track then return end
+    
+    local item_count = reaper.CountTrackMediaItems(track)
+    local current_name = GetTakeMetadata(take, "loop_name") or ""
+    local current_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    
+    -- Si on passe de PLAY à RECORD
+    if old_type == "PLAY" and new_type == "RECORD" then
+        -- Mettre à jour toutes les références vers ce bloc
+        for i = 0, item_count - 1 do
+            local other_item = reaper.GetTrackMediaItem(track, i)
+            if other_item ~= item then
+                local other_take = reaper.GetActiveTake(other_item)
+                if other_take then
+                    local other_type = GetTakeMetadata(other_take, "loop_type")
+                    if other_type == "PLAY" then
+                        local ref = GetTakeMetadata(other_take, "reference_loop")
+                        if ref == current_name then
+                            local other_pos = reaper.GetMediaItemInfo_Value(other_item, "D_POSITION")
+                            -- Si le bloc PLAY est avant le nouveau bloc RECORD dans la timeline
+                            if other_pos < current_pos then
+                                -- Trouver le bloc RECORD le plus proche avant ce bloc PLAY
+                                local closest_record = nil
+                                local closest_pos = -math.huge
+                                
+                                for j = 0, item_count - 1 do
+                                    local record_item = reaper.GetTrackMediaItem(track, j)
+                                    local record_take = reaper.GetActiveTake(record_item)
+                                    if record_take then
+                                        local record_type = GetTakeMetadata(record_take, "loop_type")
+                                        if record_type == "RECORD" then
+                                            local record_pos = reaper.GetMediaItemInfo_Value(record_item, "D_POSITION")
+                                            if record_pos < other_pos and record_pos > closest_pos then
+                                                closest_pos = record_pos
+                                                closest_record = record_take
+                                            end
+                                        end
+                                    end
+                                end
+                                
+                                if closest_record then
+                                    -- Utiliser le nom du bloc RECORD le plus proche
+                                    local new_ref = GetTakeMetadata(closest_record, "loop_name")
+                                    SetTakeMetadata(other_take, "reference_loop", new_ref)
+                                end
+                            else
+                                -- Si le bloc PLAY est après, on peut utiliser le nouveau nom
+                                SetTakeMetadata(other_take, "reference_loop", current_name)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function UpdateTakeData(take)
     if take then
+        local old_type = GetTakeMetadata(take, "loop_type") or "RECORD"
         current_take = take
         local retval, notecnt, ccevtcnt, textsyxevtcnt = reaper.MIDI_CountEvts(take)
         if retval and notecnt > 0 then
@@ -600,6 +646,32 @@ local function UpdateTakeData(take)
         end
         
         monitoring = tonumber(GetTakeMetadata(take, "monitoring")) or (lt == "PLAY" and 0 or 1)
+
+        -- Si on change de type vers RECORD, s'assurer que le nom est unique
+        if lt ~= "RECORD" and loop_types[selected_loop_type_index + 1] == "RECORD" then
+            local old_name = GetTakeMetadata(take, "loop_name") or ""
+            -- Effacer temporairement l'ancien nom pour la validation
+            SetTakeMetadata(take, "loop_name", "")
+            local valid = IsLoopNameValid(take, loop_name)
+            -- Restaurer l'ancien nom si la validation échoue
+            SetTakeMetadata(take, "loop_name", old_name)
+            if not valid then
+                reaper.ShowMessageBox("Le nom '" .. loop_name .. "' est déjà utilisé par un autre bloc RECORD.\nVeuillez choisir un autre nom avant de changer le type.", "Erreur", 0)
+                -- Revenir au type précédent
+                for i, v in ipairs(loop_types) do
+                    if v == lt then
+                        selected_loop_type_index = i - 1
+                        break
+                    end
+                end
+            end
+        end
+        
+        -- Mettre à jour les références si le type a changé
+        local new_type = loop_types[selected_loop_type_index + 1]
+        if old_type ~= new_type then
+            UpdateReferences(take, old_type, new_type)
+        end
     end
 end
 
@@ -834,7 +906,7 @@ local function DrawLoopEditor()
         end
 
         -- Bouton Appliquer
-        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x127349FF )  -- Vert
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x127349FF )  -- Vert 
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x1AA368FF)  -- Vert plus clair pour le hover
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0xF7E47EFF)  -- Vert encore plus clair pour le clic
         
@@ -954,31 +1026,43 @@ local function DrawLoopEditor()
 
             -- Code existant pour un seul item
             if loop_type == "RECORD" then
-                local valid, message = IsLoopNameValid(take, loop_name)
-                if not valid then
-                    reaper.ShowMessageBox(message, "Erreur", 0)
-                else
-                    local old_name = GetTakeMetadata(take, "loop_name") or ""
-                    SetTakeMetadata(take, "loop_type", loop_type)
-                    SetTakeMetadata(take, "loop_name", loop_name)
-                    SetTakeMetadata(take, "is_mono", tostring(is_mono))
-                    SetTakeMetadata(take, "pan", tostring(pan))
-                    SetTakeMetadata(take, "volume_db", tostring(volume_db))
-                    SetTakeMetadata(take, "monitoring", tostring(monitoring))
-                    -- Sauvegarder les valeurs des paramètres de modulation
-                    for i, param in ipairs(modulation_params) do
-                        SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
-                        SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                -- Vérifier d'abord si le nom est valide
+                local old_type = GetTakeMetadata(take, "loop_type")
+                local old_name = GetTakeMetadata(take, "loop_name") or ""
+                
+                -- Si on change de type vers RECORD, on doit vérifier le nom avant
+                if old_type ~= "RECORD" then
+                    -- Effacer temporairement l'ancien nom pour la validation
+                    SetTakeMetadata(take, "loop_name", "")
+                    local valid = IsLoopNameValid(take, loop_name)
+                    -- Restaurer l'ancien nom si la validation échoue
+                    SetTakeMetadata(take, "loop_name", old_name)
+                    if not valid then
+                        reaper.ShowMessageBox("Le nom '" .. loop_name .. "' est déjà utilisé par un autre bloc RECORD.\nVeuillez choisir un autre nom avant de changer le type.", "Erreur", 0)
+                        reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
+                        return
                     end
-                    reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", loop_name, true)
-                    reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.RECORD)
-                    if old_name ~= "" and old_name ~= loop_name then
-                        UpdateDependentLoops(take, old_name, loop_name)
-                    end
-                    local track = reaper.GetMediaItemTake_Track(take)
-                    ProcessMIDINotes(track)
                 end
-
+                
+                -- Maintenant on peut changer le type et les autres paramètres
+                SetTakeMetadata(take, "loop_type", loop_type)
+                SetTakeMetadata(take, "loop_name", loop_name)
+                SetTakeMetadata(take, "is_mono", tostring(is_mono))
+                SetTakeMetadata(take, "pan", tostring(pan))
+                SetTakeMetadata(take, "volume_db", tostring(volume_db))
+                SetTakeMetadata(take, "monitoring", tostring(monitoring))
+                -- Sauvegarder les valeurs des paramètres de modulation
+                for i, param in ipairs(modulation_params) do
+                    SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
+                    SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
+                end
+                reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", loop_name, true)
+                reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.RECORD)
+                if old_name ~= "" and old_name ~= loop_name and old_type == "RECORD" then
+                    UpdateDependentLoops(take, old_name, loop_name)
+                end
+                local track = reaper.GetMediaItemTake_Track(take)
+                ProcessMIDINotes(track)
             elseif loop_type == "OVERDUB" then
                 SetTakeMetadata(take, "loop_type", loop_type)
                 SetTakeMetadata(take, "reference_loop", reference_loop)

@@ -81,7 +81,7 @@ M.GMEM = {
     LOG_START = 29008,          -- Début du journal
     LOG_LENGTH = 29009,         -- Nombre d'entrées dans le journal
     LOG_DATA = 29010,           -- Début des données du journal
-    DATA_SIZE = 29011,          -- Où stocker la taille des données
+    DATA_SIZE = 29011,          -- Taille totale de la mémoire utilisée par une instance 
     DATA_BUFFER = 30000,        -- Début du buffer de données
     DATA_BUFFER_END = 59999     -- Fin du buffer de données
 }
@@ -134,18 +134,27 @@ function M.generate_jsfx_constants()
     
     -- Générer les constantes de base
     output = output .. "// Constantes de base\n"
+    local sorted_constants = {}
     for name, value in pairs(M.CONSTANTS) do
-        local jsfx_name = name:upper()
-        output = output .. string.format("%s = %d;\n", jsfx_name, value)
+        table.insert(sorted_constants, {name = name, value = value})
+    end
+    table.sort(sorted_constants, function(a, b) return a.value < b.value end)
+    for _, item in ipairs(sorted_constants) do
+        local jsfx_name = item.name:upper()
+        output = output .. string.format("%s = %d;\n", jsfx_name, item.value)
     end
     output = output .. "\n"
     
     -- Générer les définitions GMEM
     output = output .. "// Indices GMEM\n"
+    local sorted_gmem = {}
     for name, value in pairs(M.GMEM) do
-        -- Convertir le nom en format JSFX (majuscules avec underscore)
-        local jsfx_name = "GMEM_" .. name:upper()
-        output = output .. string.format("%s = %d;\n", jsfx_name, value)
+        table.insert(sorted_gmem, {name = name, value = value})
+    end
+    table.sort(sorted_gmem, function(a, b) return a.value < b.value end)
+    for _, item in ipairs(sorted_gmem) do
+        local jsfx_name = "GMEM_" .. item.name:upper()
+        output = output .. string.format("%s = %d;\n", jsfx_name, item.value)
     end
     output = output .. "\n"
     
@@ -159,9 +168,14 @@ function M.generate_jsfx_constants()
     
     -- Générer les codes de débogage
     output = output .. "// Codes de débogage\n"
+    local sorted_debug = {}
     for name, value in pairs(M.DEBUG_CODES) do
-        local jsfx_name = "DEBUG_" .. name
-        output = output .. string.format("%s = %d;\n", jsfx_name, value)
+        table.insert(sorted_debug, {name = name, value = value})
+    end
+    table.sort(sorted_debug, function(a, b) return a.value < b.value end)
+    for _, item in ipairs(sorted_debug) do
+        local jsfx_name = "DEBUG_" .. item.name
+        output = output .. string.format("%s = %d;\n", jsfx_name, item.value)
     end
     output = output .. "\n"
     
@@ -172,17 +186,33 @@ function M.generate_jsfx_constants()
     
     -- Générer les constantes de debug
     output = output .. "// Debug\n"
+    local sorted_debug_const = {}
     for name, value in pairs(M.DEBUG) do
-        local jsfx_name = "DEBUG_" .. name:upper()
-        if type(value) == "boolean" then
-            output = output .. string.format("%s = %d;\n", jsfx_name, value and 1 or 0)
-        else
-            output = output .. string.format("%s = %d;\n", jsfx_name, value)
-        end
+        -- Convertir les booléens en nombres
+        local numeric_value = type(value) == "boolean" and (value and 1 or 0) or value
+        table.insert(sorted_debug_const, {name = name, value = numeric_value})
+    end
+    table.sort(sorted_debug_const, function(a, b) return a.value < b.value end)
+    for _, item in ipairs(sorted_debug_const) do
+        local jsfx_name = "DEBUG_" .. item.name:upper()
+        output = output .. string.format("%s = %d;\n", jsfx_name, item.value)
     end
     
     output = output .. "\n// GENERATED_CONSTANTS_END\n"
     return output
+end
+
+--------------------------------------------------------------------------------
+-- Fonction pour normaliser une chaîne de texte (supprime les espaces superflus)
+--------------------------------------------------------------------------------
+function M.normalize_string(str)
+    -- Supprimer les espaces en début et fin de ligne
+    str = str:gsub("^%s+", ""):gsub("%s+$", "")
+    -- Remplacer les séquences d'espaces par un seul espace
+    str = str:gsub("%s+", " ")
+    -- Supprimer les espaces avant les points-virgules
+    str = str:gsub("%s+;", ";")
+    return str
 end
 
 -- Fonction pour mettre à jour le fichier JSFX
@@ -211,25 +241,22 @@ function M.update_jsfx_constants()
         return false, "Marqueurs non trouvés dans le fichier JSFX"
     end
     
-    -- Extraire les constantes actuelles
+    -- Extraire le bloc de constantes actuel
     local current_constants = content:sub(start_pos, end_pos + #end_marker)
     
-    -- Générer les nouvelles constantes
+    -- Générer le nouveau bloc de constantes
     local new_constants = M.generate_jsfx_constants()
     
-    -- Comparer les constantes (en ignorant les espaces et les retours à la ligne)
-    local function normalize(str)
-        -- Supprimer les espaces et les retours à la ligne
-        return str:gsub("%s+", "")
-    end
+    -- Si les blocs sont identiques, ne rien faire
+    local normalized_current = M.normalize_string(current_constants)
+    local normalized_new = M.normalize_string(new_constants)
     
-    -- Si les constantes sont identiques, ne rien faire
-    if normalize(current_constants) == normalize(new_constants) then
-        reaper.ShowMessageBox("Aucune modification n'était nécessaire. Les constantes sont déjà à jour.", "Mise à jour des constantes", 0)
+    if normalized_current == normalized_new then
         return true, "Les constantes JSFX sont déjà à jour"
     end
     
-    -- Les constantes sont différentes, ouvrir le fichier en écriture
+    -- Les blocs sont différents, mettre à jour le fichier
+    -- Ouvrir le fichier en écriture
     file = io.open(jsfx_path, "w")
     if not file then
         return false, "Impossible d'ouvrir le fichier JSFX en écriture : " .. jsfx_path
@@ -244,8 +271,8 @@ function M.update_jsfx_constants()
     file:write(new_content)
     file:close()
     
-    -- Afficher un message indiquant que le fichier a été modifié
-    reaper.ShowMessageBox("Des modifications ont été apportées aux constantes. Le fichier PoulpyLoop a été mis à jour.", "Mise à jour des constantes", 0)
+    -- Notifier l'utilisateur de la mise à jour
+    reaper.ShowMessageBox("Le bloc de constantes dans PoulpyLoop a été mis à jour.", "Mise à jour des constantes", 0)
     
     return true, "Constantes JSFX mises à jour avec succès"
 end
