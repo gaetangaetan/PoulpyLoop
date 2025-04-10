@@ -340,7 +340,7 @@ save_note_length = 0;       // Longueur de la note en cours de sauvegarde
 @slider
 fade_samples = slider1;
 // Mettre à jour gmem avec l'état du monitoring à l'arrêt
-//gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
+gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
 
@@ -350,6 +350,8 @@ fade_samples = slider1;
 slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
 // Traitement des commandes provenant de PoulpyLoopyUI
+/*
+
 command = gmem[GMEM_UI_COMMAND];
 target_instance = gmem[GMEM_INSTANCE_ID];
 
@@ -466,6 +468,7 @@ target_instance = gmem[GMEM_INSTANCE_ID];
         );
     );
 );
+*/
 
 // Mise à jour des sliders de modulation
 i = 0;
@@ -537,7 +540,7 @@ while (
     );
 
     (status == $xB0) ? (
-      ((idx >= 0)&& play_state) ? (
+      ((idx >= 0)&& play_state) ? (// Attention!!! On ignore les messages MIDI à l'arrêt
         (msg2 == 7) ? (
             volumeFactor = cc7ToGain(msg3);
         ) : (msg2 == 9) ? (
