@@ -7,7 +7,7 @@ local reaper = reaper
 
 -- Charger le module Core
 local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/"
-local core = dofile(script_path .. "PoulpyLoopyCore1.lua")
+local core = dofile(script_path .. "PoulpyLoopyCore.lua")
 
 -- Importer les fonctions et constantes du Core dont nous avons besoin
 local COLORS = core.COLORS

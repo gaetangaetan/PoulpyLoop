@@ -3,33 +3,30 @@
 
 local reaper = reaper
 
--- Charger les constantes
-local script_path = reaper.GetResourcePath() .. "/Scripts/mrpoulpy/"
-local constants = dofile(script_path .. "PoulpyLoopyCore0.lua")
-
 -- Variable pour contrôler l'affichage des messages dans la console
-local DEBUG_DEV = constants.DEBUG.DEV  -- Mode développement
+local GMEM_AFFICHAGE_CONSOLE_DEBUG = 17100  -- Nouvelle adresse pour le contrôle de l'affichage console
+local DEBUG_DEV = false  -- Mode développement, mettre à true seulement pour déboguer le service
 
 -- Se connecter à gmem d'abord
 reaper.gmem_attach("PoulpyLoopy")
 
 -- Initialiser la variable d'affichage si nécessaire (avant tout usage)
 -- Si elle n'existe pas encore ou n'est pas définie correctement (0 ou 1), on l'initialise à 0 (désactivé par défaut)
-if reaper.gmem_read(constants.DEBUG.AFFICHAGE_CONSOLE) ~= 0 and reaper.gmem_read(constants.DEBUG.AFFICHAGE_CONSOLE) ~= 1 then
-    reaper.gmem_write(constants.DEBUG.AFFICHAGE_CONSOLE, 0)
+if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) ~= 0 and reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) ~= 1 then
+    reaper.gmem_write(GMEM_AFFICHAGE_CONSOLE_DEBUG, 0)
 end
 
 -- Fonction pour afficher des messages dans la console REAPER
 local function debug_console(message)
     -- Vérifier si l'affichage console est activé (1) ou si on est en mode développement
-    if reaper.gmem_read(constants.DEBUG.AFFICHAGE_CONSOLE) == 1 or DEBUG_DEV then
+    if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1 or DEBUG_DEV then
         reaper.ShowConsoleMsg("[PoulpyLoopyService] " .. message .. "\n")
     end
 end
 
 -- Fonction simplifiée pour les messages importants (force l'affichage si une condition est vérifiée)
 local function debug_important(message, force_condition)
-    if reaper.gmem_read(constants.DEBUG.AFFICHAGE_CONSOLE) == 1 or DEBUG_DEV or force_condition then
+    if reaper.gmem_read(GMEM_AFFICHAGE_CONSOLE_DEBUG) == 1 or DEBUG_DEV or force_condition then
         reaper.ShowConsoleMsg("[PoulpyLoopyService] " .. message .. "\n")
     end
 end
@@ -38,14 +35,35 @@ end
 debug_console("Démarrage du service...")
 debug_console("Connexion à gmem:PoulpyLoopy établie")
 
+-- Indices gmem pour les modes
+local GMEM_RECORD_MONITOR_MODE = 0  -- gmem[0] pour le mode d'enregistrement des loops MONITOR
+local GMEM_PLAYBACK_MODE = 1        -- gmem[1] pour le mode LIVE/PLAYBACK
+local GMEM_STATS_BASE = 2           -- gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
+local GMEM_NEXT_INSTANCE_ID = 194   -- gmem[194] pour le prochain ID d'instance disponible
+local GMEM_MONITORING_STOP_BASE = 195  -- gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
+local GMEM_NOTE_START_POS_BASE = 259  -- gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
+local GMEM_LOOP_LENGTH_BASE = 8451    -- gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
+
+-- Nouveaux indices pour la synchronisation MIDI
+local GMEM_FORCE_ANALYZE = 16000     -- gmem[16000] pour forcer l'analyse des offsets (1 = forcer)
+local GMEM_MIDI_SYNC_DATA_BASE = 16001 -- gmem[16001] à gmem[16001+64*3-1] pour les données de synchronisation MIDI (64 pistes max)
+-- Pour chaque piste avec PoulpyLoop:
+-- GMEM_MIDI_SYNC_DATA_BASE + track_id*3 + 0 = ID de la piste
+-- GMEM_MIDI_SYNC_DATA_BASE + track_id*3 + 1 = Position de début de la note (en secondes)
+-- GMEM_MIDI_SYNC_DATA_BASE + track_id*3 + 2 = Durée de la mesure (en secondes)
+
+-- Espace pour les messages dans gmem
+local GMEM_MESSAGE_BASE = 17000      -- gmem[17000] à gmem[17000+9999] pour les messages (10000 caractères)
+local GMEM_MESSAGE_WRITE_POS = 16999  -- gmem[16999] pour la position d'écriture actuelle
+
 -- S'assurer que les adresses mémoire sont différentes
-assert(constants.GMEM.MESSAGE_BASE ~= constants.GMEM.MESSAGE_WRITE_POS, "Les adresses GMEM_MESSAGE_BASE et GMEM_MESSAGE_WRITE_POS doivent être différentes")
+assert(GMEM_MESSAGE_BASE ~= GMEM_MESSAGE_WRITE_POS, "Les adresses GMEM_MESSAGE_BASE et GMEM_MESSAGE_WRITE_POS doivent être différentes")
 
 -- Fonction pour réinitialiser complètement l'espace de message
 local function reset_message_space()
-    reaper.gmem_write(constants.GMEM.MESSAGE_WRITE_POS, 0)
+    reaper.gmem_write(GMEM_MESSAGE_WRITE_POS, 0)
     for i = 0, 9999 do
-        reaper.gmem_write(constants.GMEM.MESSAGE_BASE + i, 0)
+        reaper.gmem_write(GMEM_MESSAGE_BASE + i, 0)
     end
 end
 
@@ -60,7 +78,7 @@ local function write_message_to_gmem(message)
     message = message .. "\n"
     
     -- Obtenir la position d'écriture actuelle
-    local write_pos = reaper.gmem_read(constants.GMEM.MESSAGE_WRITE_POS)
+    local write_pos = reaper.gmem_read(GMEM_MESSAGE_WRITE_POS)
     
     -- Vérifier s'il reste assez d'espace
     if write_pos + #message > 10000 then
@@ -70,11 +88,11 @@ local function write_message_to_gmem(message)
     
     -- Écrire le message
     for i = 1, #message do
-        reaper.gmem_write(constants.GMEM.MESSAGE_BASE + write_pos + (i-1), string.byte(message:sub(i,i)))
+        reaper.gmem_write(GMEM_MESSAGE_BASE + write_pos + (i-1), string.byte(message:sub(i,i)))
     end
     
     -- Mettre à jour la position d'écriture
-    reaper.gmem_write(constants.GMEM.MESSAGE_WRITE_POS, write_pos + #message)
+    reaper.gmem_write(GMEM_MESSAGE_WRITE_POS, write_pos + #message)
     
     return #message
 end
@@ -97,15 +115,6 @@ end
 -- Marquer le service comme en cours d'exécution
 reaper.SetExtState("PoulpyLoopyService", "running", "1", false)
 debug_console("État du service marqué comme 'en cours d'exécution'")
-
--- Mettre à jour les constantes dans le fichier JSFX
-debug_console("Mise à jour des constantes JSFX...")
-local success, message = constants.update_jsfx_constants()
-if not success then
-    debug_important("Erreur lors de la mise à jour des constantes JSFX : " .. message, true)
-else
-    debug_console("Constantes JSFX mises à jour avec succès")
-end
 
 -- Fonction pour tester l'écriture et la lecture du message
 local function test_message_system()
@@ -133,21 +142,21 @@ local function test_message_system()
 end
 
 -- Initialiser les valeurs dans gmem si elles ne sont pas déjà définies
-if reaper.gmem_read(constants.GMEM.RECORD_MONITOR_MODE) == 0 and reaper.gmem_read(constants.GMEM.PLAYBACK_MODE) == 0 then
-    reaper.gmem_write(constants.GMEM.RECORD_MONITOR_MODE, 0)  -- Par défaut, pas d'enregistrement des loops MONITOR
-    reaper.gmem_write(constants.GMEM.PLAYBACK_MODE, 0)        -- Par défaut, mode LIVE
+if reaper.gmem_read(GMEM_RECORD_MONITOR_MODE) == 0 and reaper.gmem_read(GMEM_PLAYBACK_MODE) == 0 then
+    reaper.gmem_write(GMEM_RECORD_MONITOR_MODE, 0)  -- Par défaut, pas d'enregistrement des loops MONITOR
+    reaper.gmem_write(GMEM_PLAYBACK_MODE, 0)        -- Par défaut, mode LIVE
     write_message_to_gmem("PoulpyLoopyService: Valeurs initialisées")
     debug_console("Valeurs gmem initialisées")
 end
 
 -- Initialiser le compteur d'ID d'instance si nécessaire
-if reaper.gmem_read(constants.GMEM.NEXT_INSTANCE_ID) == 0 then
-    reaper.gmem_write(constants.GMEM.NEXT_INSTANCE_ID, 0)
+if reaper.gmem_read(GMEM_NEXT_INSTANCE_ID) == 0 then
+    reaper.gmem_write(GMEM_NEXT_INSTANCE_ID, 0)
 end
 
 -- Initialiser l'espace mémoire pour les statistiques (64 instances max)
 for i = 0, 63 do
-    local stats_base = constants.GMEM.STATS_BASE + i * 3
+    local stats_base = GMEM_STATS_BASE + i * 3
     -- Initialiser uniquement si la valeur est 0 (pas déjà définie)
     if reaper.gmem_read(stats_base) == 0 then
         reaper.gmem_write(stats_base, 0)      -- Mémoire utilisée (Mo)
@@ -158,21 +167,21 @@ end
 
 -- Initialiser l'espace mémoire pour le monitoring à l'arrêt
 for i = 0, 63 do
-    if reaper.gmem_read(constants.GMEM.MONITORING_STOP_BASE + i) == 0 then
-        reaper.gmem_write(constants.GMEM.MONITORING_STOP_BASE + i, 0)  -- Par défaut, monitoring à l'arrêt désactivé
+    if reaper.gmem_read(GMEM_MONITORING_STOP_BASE + i) == 0 then
+        reaper.gmem_write(GMEM_MONITORING_STOP_BASE + i, 0)  -- Par défaut, monitoring à l'arrêt désactivé
     end
 end
 
 -- Initialiser l'espace mémoire pour les positions de début des notes
 for i = 0, 63 do
     for note = 0, 127 do
-        local pos_index = constants.GMEM.NOTE_START_POS_BASE + i * 128 + note
+        local pos_index = GMEM_NOTE_START_POS_BASE + i * 128 + note
         if reaper.gmem_read(pos_index) == 0 then
             reaper.gmem_write(pos_index, -1)  -- -1 signifie qu'aucune note n'est active
         end
         
         -- Initialiser aussi les longueurs des boucles
-        local len_index = constants.GMEM.LOOP_LENGTH_BASE + i * 128 + note
+        local len_index = GMEM_LOOP_LENGTH_BASE + i * 128 + note
         if reaper.gmem_read(len_index) == 0 then
             reaper.gmem_write(len_index, -1)  -- -1 signifie pas de boucle
         end
@@ -182,7 +191,7 @@ end
 -- Initialiser l'état de lecture et les données de synchronisation MIDI
 -- Initialiser l'espace pour les données de synchronisation MIDI
 for i = 0, 63 do
-    local sync_base = constants.GMEM.MIDI_SYNC_DATA_BASE + i * 3
+    local sync_base = GMEM_MIDI_SYNC_DATA_BASE + i * 3
     reaper.gmem_write(sync_base, -1)     -- ID de piste invalide
     reaper.gmem_write(sync_base + 1, 0)  -- Position 0
     reaper.gmem_write(sync_base + 2, 0)  -- Durée 0
@@ -264,7 +273,7 @@ local function analyze_midi_position(poulpy_tracks)
     
     -- Effacer d'abord toutes les entrées pour éviter les données obsolètes
     for i = 0, 63 do
-        local sync_base = constants.GMEM.MIDI_SYNC_DATA_BASE + i * 3
+        local sync_base = GMEM_MIDI_SYNC_DATA_BASE + i * 3
         reaper.gmem_write(sync_base, -1)     -- ID de piste invalide
         reaper.gmem_write(sync_base + 1, 0)  -- Offset = 0 par défaut
         reaper.gmem_write(sync_base + 2, 0)  -- Durée = 0 par défaut
@@ -276,7 +285,7 @@ local function analyze_midi_position(poulpy_tracks)
         local track_data = poulpy_tracks[i]
         local track = track_data.track
         local track_id = track_data.track_id
-        local sync_base = constants.GMEM.MIDI_SYNC_DATA_BASE + track_id * 3  -- Important: utiliser track_id et non (i-1)
+        local sync_base = GMEM_MIDI_SYNC_DATA_BASE + track_id * 3  -- Important: utiliser track_id et non (i-1)
         
         -- Stocker l'ID de la piste
         reaper.gmem_write(sync_base, track_id)
@@ -357,7 +366,7 @@ local function main()
     local play_state = reaper.GetPlayState()
     
     -- Vérifier si on force l'analyse
-    local force_analyze = reaper.gmem_read(constants.GMEM.FORCE_ANALYZE) == 1
+    local force_analyze = reaper.gmem_read(GMEM_FORCE_ANALYZE) == 1
     
     -- Si l'état de lecture a changé ou si on force l'analyse
     if play_state ~= last_play_state or force_analyze then
@@ -381,7 +390,7 @@ local function main()
         
         -- Réinitialiser le flag de forçage APRÈS l'analyse
         if force_analyze then
-            reaper.gmem_write(constants.GMEM.FORCE_ANALYZE, 0)
+            reaper.gmem_write(GMEM_FORCE_ANALYZE, 0)
             debug_important("Flag d'analyse forcée réinitialisé", force_analyze)
             write_message_to_gmem("=== FIN DE L'ANALYSE FORCÉE ===")
         end
