@@ -225,7 +225,7 @@ function startRecording(note, mode)
 (
   // En mode PLAYBACK, on n'enregistre pas
   (get_playback_mode() == 1) ? (
-    sprintf(current_display, "Mode PLAYBACK: enregistrement désactivé");
+    sprintf(current_display, "PLAYBACK mode : recording disabled");
     0; // Ne rien faire
   ) : (
     note_length[note] = 0;
@@ -355,7 +355,7 @@ using_offsets = (offset_position > 0 && measure_duration > 0) ? 1 : 0;
 
 // Message de débogage
 /*sprintf(debug_str, "État: %s | Track: %d | Offset: %.3f | Durée: %.3f", 
-         play_state ? "LECTURE" : "ARRÊTÉ",
+         play_state ? "PLAYING" : "STOPPED",
          track_id, offset_position, measure_duration);
 */
 // Variable pour suivre si des notes ont été traitées dans ce bloc
@@ -406,7 +406,7 @@ while (
       (idx >= 0) ? (
         // Pour les blocs RECORD ou MONITOR, afficher la longueur attendue
         ((vel == 1 || vel == 4) && temp_block_length > 0) ? (
-          sprintf(debug_str2, "Longueur attendue: %.1f dixièmes de seconde", temp_block_length);
+          sprintf(debug_str2, "Expected length: %.1f tenth of a second", temp_block_length);
         );
 
         // Debug: afficher le type de note reçue
@@ -417,7 +417,7 @@ while (
         gmem[note_pos_index] = play_position + offset / srate;
         
         // Afficher les valeurs de modulation pour cette note
-        sprintf(debug_str, "\n\nModulations pour note %d:", idx);
+        sprintf(debug_str, "\n\nModulations for note %d:", idx);
         i = 0;
         loop(MODULATION_COUNT,
           start_val = get_modulation_start(i);
@@ -449,9 +449,9 @@ while (
               read_pos[idx] = 0;
               is_recording[idx] = 0;
               loop_type[idx] = 0; // Garder le type RECORD
-              sprintf(current_display, "Playback: lecture RECORD note=%d", note);
+              sprintf(current_display, "Playback: playing RECORD note=%d", note);
             ) : (
-              sprintf(current_display, "Playback: pas de contenu pour RECORD note=%d", note);
+              sprintf(current_display, "Playback: no content for RECORD note=%d", note);
             );
           ) : (
             // En mode LIVE, comportement normal
@@ -470,7 +470,7 @@ while (
             
             is_recording[idx] = 0;
             loop_type[idx] = 1;
-          ) : sprintf(current_display, "Pas de sample pour %d", note)
+          ) : sprintf(current_display, "No sample for %d", note)
         )
         : (vel == 3) ? ( // OVERDUB
           (playback_mode == 1) ? (
@@ -485,7 +485,7 @@ while (
               is_recording[idx] = playback_mode == 0;
               loop_type[idx] = 2;
             ) : (
-              sprintf(current_display, "Playback: pas de contenu pour OVERDUB note=%d", note);
+              sprintf(current_display, "Playback: no content for OVERDUB note=%d", note);
             );
           ) : (
             // En mode LIVE, comportement normal
@@ -525,7 +525,7 @@ while (
             );
           );
         )
-        : sprintf(current_display, "Vel. non supportée: %d", vel)
+        : sprintf(current_display, "Vel. not supported: %d", vel)
       );
     );
 
@@ -733,27 +733,33 @@ gfx_clear = 0;
 gfx_setfont(1, "Arial", 30);
 gfx_set(1,1,1,1);
 
+
 // Afficher l'état de lecture en haut
 gfx_x = 10;
 gfx_y = 10;
 gfx_set(1, 1, 1, 1);
-gfx_drawstr("État de lecture: ");
+gfx_drawstr("Playstate: ");
 gfx_x += 200;
 (play_state >= 1) ? (
   gfx_set(0.5, 1, 0.5, 1); // Vert pour LECTURE
-  gfx_drawstr("LECTURE");
+  gfx_drawstr("PLAYING");
 ) : (
   gfx_set(1, 0.5, 0.5, 1); // Rouge pour ARRÊTÉ
-  gfx_drawstr("ARRÊTÉ");
+  gfx_drawstr("STOPPED");
 );
 
 // Afficher le mode actuel
 playback_mode = get_playback_mode();
 gfx_x = 10;
 gfx_y = 50;
-gfx_set(0.5, 1, 0.5, 1); // Vert pour LIVE
-gfx_drawstr("Mode: LIVE");
 
+(playback_mode != 1) ? (
+  gfx_set(1, 0.5, 0.5, 1); // ROUGE pour LIVE
+  gfx_drawstr("Mode: LIVE");
+) : (
+  gfx_set(0.5,1, 0.5, 1); // VERT pour PLAYBACK
+  gfx_drawstr("Mode: PLAYBACK");
+);
 // Afficher la longueur attendue si présente
 gfx_x = 10;
 gfx_y = 90;
