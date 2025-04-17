@@ -195,7 +195,7 @@ end
 
 local function drawRecInputCombo()
     local label = getCurrentRecInputLabel()
-    if reaper.ImGui_BeginCombo(ctx, "Entrée Audio", label) then
+    if reaper.ImGui_BeginCombo(ctx, "Audio input", label) then
         for i, opt in ipairs(recInputOptions) do
             local isSel = (selectedRecInputOption == i)
             if reaper.ImGui_Selectable(ctx, opt.label, isSel) then
@@ -567,9 +567,9 @@ local function DrawLoopEditor()
 
         -- Affichage des informations MIDI
         if current_midi_note then
-            reaper.ImGui_Text(ctx, string.format("Note MIDI: %d (Vélocité: %d)", current_midi_note, current_midi_velocity))
+            reaper.ImGui_Text(ctx, string.format("MIDI note : %d (Velocity: %d)", current_midi_note, current_midi_velocity))
         else
-            reaper.ImGui_Text(ctx, "Aucune note MIDI trouvée")
+            reaper.ImGui_Text(ctx, "No MIDI note found")
         end
         
         reaper.ImGui_Separator(ctx)
@@ -599,9 +599,9 @@ local function DrawLoopEditor()
             end
         end
         
-        reaper.ImGui_Text(ctx, string.format("Éléments sélectionnés : %d", #selected_items))
+        reaper.ImGui_Text(ctx, string.format("Selected items : %d", #selected_items))
         if #selected_items > 1 and not all_same_track then
-            reaper.ImGui_TextColored(ctx, 0xFF0000FF, "Attention : Tous les blocs sélectionnés doivent être sur la même piste!")
+            reaper.ImGui_TextColored(ctx, 0xFF0000FF, "Warning : All the selected items must be on the same track!")
         end
 
         -- Type de Loop
@@ -623,12 +623,12 @@ local function DrawLoopEditor()
 
         -- Options spécifiques selon le type de loop
         if loop_type == "RECORD" then
-            local changed, new_name = reaper.ImGui_InputText(ctx, "Nom", loop_name, 256)
+            local changed, new_name = reaper.ImGui_InputText(ctx, "Name", loop_name, 256)
             if changed then loop_name = trim(new_name) end
 
             if reaper.ImGui_RadioButton(ctx, "Mono", is_mono) then is_mono = true end
             reaper.ImGui_SameLine(ctx)
-            if reaper.ImGui_RadioButton(ctx, "Stéréo", not is_mono) then is_mono = false end
+            if reaper.ImGui_RadioButton(ctx, "Stereo", not is_mono) then is_mono = false end
 
             local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Pan", pan, -1.0, 1.0, "%.2f")
             if pan_changed then pan = new_pan end
@@ -643,7 +643,7 @@ local function DrawLoopEditor()
         elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
             local prev_loops = GetPreviousRecordLoopsInFolder(take)
             
-            table.insert(prev_loops, 1, "(Aucun)")
+            table.insert(prev_loops, 1, "(None)")
             local sel_idx = 1
             
             if reference_loop and reference_loop ~= "" then
@@ -674,12 +674,12 @@ local function DrawLoopEditor()
                 end
             end
             
-            if reaper.ImGui_BeginCombo(ctx, "Réf", prev_loops[sel_idx] or "(Aucun)") then
+            if reaper.ImGui_BeginCombo(ctx, "Ref", prev_loops[sel_idx] or "(None)") then
                 for i, name in ipairs(prev_loops) do
                     local is_sel = (sel_idx == i)
                     if reaper.ImGui_Selectable(ctx, name, is_sel) then
                         sel_idx = i
-                        reference_loop = (name == "(Aucun)") and "" or name
+                        reference_loop = (name == "(None)") and "" or name
                     end
                     if is_sel then reaper.ImGui_SetItemDefaultFocus(ctx) end
                 end
@@ -689,7 +689,7 @@ local function DrawLoopEditor()
             if loop_type == "OVERDUB" then
                 if reaper.ImGui_RadioButton(ctx, "Mono", is_mono) then is_mono = true end
                 reaper.ImGui_SameLine(ctx)
-                if reaper.ImGui_RadioButton(ctx, "Stéréo", not is_mono) then is_mono = false end
+                if reaper.ImGui_RadioButton(ctx, "Stereo", not is_mono) then is_mono = false end
             end
 
             local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Pan", pan, -1.0, 1.0, "%.2f")
@@ -715,7 +715,7 @@ local function DrawLoopEditor()
         elseif loop_type == "MONITOR" then
             if reaper.ImGui_RadioButton(ctx, "Mono", is_mono) then is_mono = true end
             reaper.ImGui_SameLine(ctx)
-            if reaper.ImGui_RadioButton(ctx, "Stéréo", not is_mono) then is_mono = false end
+            if reaper.ImGui_RadioButton(ctx, "Stereo", not is_mono) then is_mono = false end
 
             local pan_changed, new_pan = reaper.ImGui_SliderDouble(ctx, "Pan", pan, -1.0, 1.0, "%.2f")
             if pan_changed then pan = new_pan end
@@ -729,12 +729,12 @@ local function DrawLoopEditor()
             end
 
         elseif loop_type == "UNUSED" then
-            reaper.ImGui_Text(ctx, "Ce clip est marqué comme UNUSED.")
+            reaper.ImGui_Text(ctx, "This clip is labeled as UNUSED.")
         end
 
         -- Nouveaux faders de modulation
         reaper.ImGui_Separator(ctx)
-        if reaper.ImGui_Button(ctx, "Afficher la modulation") then
+        if reaper.ImGui_Button(ctx, "Show modulation") then
             show_modulation = not show_modulation
         end
         
@@ -744,12 +744,12 @@ local function DrawLoopEditor()
                 reaper.ImGui_Text(ctx, param.name)
                 reaper.ImGui_SameLine(ctx)
                 reaper.ImGui_PushItemWidth(ctx, 60)  -- Largeur fixe pour les DragInt
-                local changed_start, new_start = reaper.ImGui_DragInt(ctx, "Début##" .. i, param.start_value, 1, 0, 127, "%d")
+                local changed_start, new_start = reaper.ImGui_DragInt(ctx, "Start##" .. i, param.start_value, 1, 0, 127, "%d")
                 if changed_start then param.start_value = new_start end
                 reaper.ImGui_PopItemWidth(ctx)
                 reaper.ImGui_SameLine(ctx)
                 reaper.ImGui_PushItemWidth(ctx, 60)  -- Largeur fixe pour les DragInt
-                local changed_end, new_end = reaper.ImGui_DragInt(ctx, "Fin##" .. i, param.end_value, 1, 0, 127, "%d")
+                local changed_end, new_end = reaper.ImGui_DragInt(ctx, "End##" .. i, param.end_value, 1, 0, 127, "%d")
                 if changed_end then param.end_value = new_end end
                 reaper.ImGui_PopItemWidth(ctx)
             end
@@ -760,9 +760,9 @@ local function DrawLoopEditor()
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x1AA368FF)  -- Vert plus clair pour le hover
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0xF7E47EFF)  -- Vert encore plus clair pour le clic
         
-        if reaper.ImGui_Button(ctx, "Appliquer") then
+        if reaper.ImGui_Button(ctx, "Apply") then
             if #selected_items > 1 and not all_same_track then
-                reaper.ShowMessageBox("Tous les blocs sélectionnés doivent être sur la même piste.", "Erreur", 0)
+                reaper.ShowMessageBox("All selected blocks must be on the same track.", "Error", 0)
                 reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
                 return
             end
@@ -787,13 +787,13 @@ local function DrawLoopEditor()
                 end
 
                 if not all_same_type then
-                    reaper.ShowMessageBox("Les items sélectionnés doivent être du même type.", "Erreur", 0)
+                    reaper.ShowMessageBox("The selected items must be of the same type.", "Error", 0)
                     reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
                     return
                 end
 
                 if not all_valid_type then
-                    reaper.ShowMessageBox("La modification en masse n'est autorisée que pour les types PLAY et MONITOR.", "Erreur", 0)
+                    reaper.ShowMessageBox("Group modification is only allowed for PLAY and MONITOR types.", "Error", 0)
                     reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs avant de retourner
                     return
                 end
@@ -810,7 +810,7 @@ local function DrawLoopEditor()
                         local item_type = GetTakeMetadata(take, "loop_type")
 
                         -- Mettre à jour le message de progression
-                        progress_message = string.format("Traitement en cours... (%d/%d)", current_item_index, #processing_items)
+                        progress_message = string.format("Processing... (%d/%d)", current_item_index, #processing_items)
                         
                         if item_type == "PLAY" then
                             SetTakeMetadata(take, "loop_type", item_type)
@@ -878,7 +878,7 @@ local function DrawLoopEditor()
             if loop_type == "RECORD" then
                 local valid, message = IsLoopNameValid(take, loop_name)
                 if not valid then
-                    reaper.ShowMessageBox(message, "Erreur", 0)
+                    reaper.ShowMessageBox(message, "Error", 0)
                 else
                     local old_name = GetTakeMetadata(take, "loop_name") or ""
                     SetTakeMetadata(take, "loop_type", loop_type)
@@ -971,7 +971,7 @@ local function DrawLoopEditor()
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x00AA40FF)
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x008000FF)
         
-        if reaper.ImGui_Button(ctx, "Insérer clic") then
+        if reaper.ImGui_Button(ctx, "Insert click") then
             if item and take and is_midi then
                 -- Set loop points to items
                 reaper.Main_OnCommand(41039, 0)
@@ -1003,17 +1003,17 @@ local function DrawLoopEditor()
             reaper.ImGui_Text(ctx, progress_message)
         end
     else
-        reaper.ImGui_Text(ctx, "Aucun item MIDI sélectionné.")
+        reaper.ImGui_Text(ctx, "No MIDI item selected.")
     end
 end
 
 local function DrawOptions()
     -- Partie 1: Options d'enregistrement
-    reaper.ImGui_Text(ctx, "Options d'enregistrement :")
+    reaper.ImGui_Text(ctx, "Recording options :")
     reaper.ImGui_Separator(ctx)
 
     -- Radio buttons pour l'enregistrement des loops MONITOR
-    reaper.ImGui_Text(ctx, "Enregistrement des loops MONITOR :")
+    reaper.ImGui_Text(ctx, "Record MONITOR blocks :")
     local changed = false
     local new_record_monitor_loops = record_monitor_loops
     if reaper.ImGui_RadioButton(ctx, "ON", record_monitor_loops) then
@@ -1022,7 +1022,7 @@ local function DrawOptions()
     end
     
     if reaper.ImGui_IsItemHovered(ctx) then
-        reaper.ImGui_SetTooltip(ctx, "Les loops MONITOR sont enregistrées comme les loops RECORD. Utile pour le mixage ultérieur.")
+        reaper.ImGui_SetTooltip(ctx, "MONITOR blocks are recorded as RECORD blocks. Useful for later mix.")
     end
     
     reaper.ImGui_SameLine(ctx)
@@ -1032,7 +1032,7 @@ local function DrawOptions()
     end
     
     if reaper.ImGui_IsItemHovered(ctx) then
-        reaper.ImGui_SetTooltip(ctx, "Les loops MONITOR ne sont pas enregistrées. Idéal pour le live pour économiser la mémoire.")
+        reaper.ImGui_SetTooltip(ctx, "MONITOR blocks are not recorded. Ideal for live performances to save memory.")
     end
 
     -- Si le mode a changé, on le sauvegarde
@@ -1044,7 +1044,7 @@ local function DrawOptions()
     reaper.ImGui_Separator(ctx)
 
     -- Radio buttons pour le mode LIVE/PLAYBACK
-    reaper.ImGui_Text(ctx, "Mode de fonctionnement :")
+    reaper.ImGui_Text(ctx, "Operation mode :")
     local mode_changed = false
     local new_playback_mode = playback_mode
     if reaper.ImGui_RadioButton(ctx, "LIVE", not playback_mode) then
@@ -1053,7 +1053,7 @@ local function DrawOptions()
     end
     
     if reaper.ImGui_IsItemHovered(ctx) then
-        reaper.ImGui_SetTooltip(ctx, "Mode normal d'enregistrement et de lecture. Les loops peuvent être modifiées.")
+        reaper.ImGui_SetTooltip(ctx, "Normal recording and playback mode. Loops can be modified.")
     end
     
     reaper.ImGui_SameLine(ctx)
@@ -1063,7 +1063,7 @@ local function DrawOptions()
     end
     
     if reaper.ImGui_IsItemHovered(ctx) then
-        reaper.ImGui_SetTooltip(ctx, "Toutes les loops sont en lecture seule. Aucun enregistrement n'est possible. Idéal pour la relecture d'un projet.")
+        reaper.ImGui_SetTooltip(ctx, "All loops are read-only. No recording is possible. Ideal for replaying a project.")
     end
 
     -- Si le mode a changé, on le sauvegarde
@@ -1075,33 +1075,36 @@ local function DrawOptions()
     reaper.ImGui_Separator(ctx)
 
     -- Partie 2: Monitoring à l'arrêt
-    reaper.ImGui_Text(ctx, "Monitoring à l'arrêt des pistes PoulpyLoop :")
+    reaper.ImGui_Text(ctx, "Monitoring when stopped for PoulpyLoop tracks :")
     reaper.ImGui_Separator(ctx)
 
     -- Tableau pour afficher les pistes avec PoulpyLoop
     reaper.ImGui_BeginTable(ctx, "monitoring_table", 2, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
     reaper.ImGui_TableSetupColumn(ctx, "Piste", reaper.ImGui_TableColumnFlags_WidthStretch())
-    reaper.ImGui_TableSetupColumn(ctx, "Monitoring à l'arrêt", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
+    reaper.ImGui_TableSetupColumn(ctx, "Monitoring when stopped", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
     reaper.ImGui_TableHeadersRow(ctx)
 
     -- Parcourir toutes les pistes
     local num_tracks = reaper.CountTracks(0)
+    local poulpy_track_index = 0  -- Nouveau compteur pour les pistes avec PoulpyLoop
+    
     for i = 0, num_tracks - 1 do
         local track = reaper.GetTrack(0, i)
-        local _, track_name = reaper.GetTrackName(track)
-        
-        -- Vérifier si la piste contient un plugin PoulpyLoop
-        local has_poulpyloop = false
-        local fx_count = reaper.TrackFX_GetCount(track)
-        for j = 0, fx_count - 1 do
-            local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
-            if fx_name:find("PoulpyLoop") then
-                has_poulpyloop = true
-                break
+        if track then  -- Vérifier que la piste existe
+            local _, track_name = reaper.GetTrackName(track)
+            
+            -- Vérifier si la piste contient un plugin PoulpyLoop
+            local has_poulpyloop = false
+            local fx_count = reaper.TrackFX_GetCount(track)
+            for j = 0, fx_count - 1 do
+                local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+                if fx_name:find("PoulpyLoop") then
+                    has_poulpyloop = true
+                    break
+                end
             end
-        end
 
-        if has_poulpyloop then
+            -- Afficher la piste même si elle n'a pas de PoulpyLoop
             reaper.ImGui_TableNextRow(ctx)
             
             -- Nom de la piste
@@ -1110,23 +1113,48 @@ local function DrawOptions()
 
             -- Case à cocher pour le monitoring à l'arrêt
             reaper.ImGui_TableNextColumn(ctx)
-            local monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + i) == 1
-            if reaper.ImGui_Checkbox(ctx, "##monitoring_stop_" .. i, monitoring_stop) then
+            local monitoring_stop = false
+            
+            -- Ne lire la valeur de gmem que pour les pistes avec PoulpyLoop
+            if has_poulpyloop then
+                monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + poulpy_track_index) == 1
+            end
+            
+            local checkbox_id = "##monitoring_stop_" .. i
+            
+            -- Si la piste n'a pas de PoulpyLoop, désactiver la case à cocher
+            if not has_poulpyloop then
+                reaper.ImGui_BeginDisabled(ctx)
+            end
+            
+            if reaper.ImGui_Checkbox(ctx, checkbox_id, monitoring_stop) then
                 -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
-                local fx_count = reaper.TrackFX_GetCount(track)
-                for j = 0, fx_count - 1 do
-                    local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
-                    if fx_name:find("PoulpyLoop") then
-                        -- Au lieu d'écrire directement dans gmem, on va modifier le paramètre du plugin
-                        -- qui s'occupera lui-même de mettre à jour gmem
-                        local new_value = monitoring_stop and 0 or 1
-                        reaper.TrackFX_SetParam(track, j, 2, new_value) -- slider3 est le paramètre d'index 2
+                if has_poulpyloop then  -- Ne mettre à jour que si la piste a PoulpyLoop
+                    local new_value = monitoring_stop and 0 or 1
+                    -- Mettre à jour la valeur dans gmem
+                    reaper.gmem_write(GMEM.MONITORING_STOP_BASE + poulpy_track_index, new_value)
+                    
+                    -- Mettre à jour le paramètre du plugin
+                    local fx_count = reaper.TrackFX_GetCount(track)
+                    for j = 0, fx_count - 1 do
+                        local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+                        if fx_name:find("PoulpyLoop") then
+                            reaper.TrackFX_SetParam(track, j, 2, new_value) -- slider3 est le paramètre d'index 2
+                        end
                     end
                 end
             end
             
-            if reaper.ImGui_IsItemHovered(ctx) then
-                reaper.ImGui_SetTooltip(ctx, "Lorsque cette option est activée, le signal d'entrée est routé vers les sorties lorsque la lecture est à l'arrêt.")
+            if not has_poulpyloop then
+                reaper.ImGui_EndDisabled(ctx)
+                if reaper.ImGui_IsItemHovered(ctx) then
+                    reaper.ImGui_SetTooltip(ctx, "This track does not contain a PoulpyLoop plugin")
+                end
+            else
+                if reaper.ImGui_IsItemHovered(ctx) then
+                    reaper.ImGui_SetTooltip(ctx, "When this option is enabled, the input signal is routed to the outputs when playback is stopped.")
+                end
+                poulpy_track_index = poulpy_track_index + 1  -- Incrémenter le compteur uniquement pour les pistes avec PoulpyLoop
             end
         end
     end
@@ -1138,7 +1166,7 @@ local function RenderSelection()
     -- Vérifier qu'il y a au moins un item sélectionné
     local sel_count = reaper.CountSelectedMediaItems(0)
     if sel_count == 0 then
-        reaper.ShowMessageBox("Aucun bloc sélectionné.", "Erreur", 0)
+        reaper.ShowMessageBox("No block selected.", "Error", 0)
         return
     end
     
@@ -1411,7 +1439,7 @@ local function UpdateAllBlocks()
     
     -- Si aucun bloc à traiter, on s'arrête
     if #blocks_to_process == 0 then
-        reaper.ShowMessageBox("Aucun bloc à mettre à jour.", "Information", 0)
+        reaper.ShowMessageBox("No blocks to update.", "Information", 0)
         return
     end
     
@@ -1423,7 +1451,7 @@ local function UpdateAllBlocks()
     local function ProcessNextBlock()
         if processed_blocks >= total_blocks then
             -- Traitement terminé
-            progress_message = "Mise à jour terminée!"
+            progress_message = "Update completed!"
             -- Restaurer la sélection originale
             for _, sel_item in ipairs(old_sel_items) do
                 reaper.SetMediaItemSelected(sel_item, true)
@@ -1437,26 +1465,26 @@ local function UpdateAllBlocks()
         
         -- Mettre à jour le compteur et le message
         processed_blocks = processed_blocks + 1
-        progress_message = string.format("Mise à jour des blocs... (%d/%d)", processed_blocks, total_blocks)
+        progress_message = string.format("Updating blocks... (%d/%d)", processed_blocks, total_blocks)
         
         -- Programmer le traitement du prochain bloc
         reaper.defer(ProcessNextBlock)
     end
     
     -- Démarrer le traitement
-    progress_message = "Démarrage de la mise à jour..."
+    progress_message = "Starting update..."
     ProcessNextBlock()
 end
 
 local function DrawTools()
     -- Partie 1: Outils de base
-    reaper.ImGui_Text(ctx, "Outils de base :")
+    reaper.ImGui_Text(ctx, "Basic tools :")
     reaper.ImGui_Separator(ctx)
     
-    reaper.ImGui_Text(ctx, "Entrée audio pour Looper :")
+    reaper.ImGui_Text(ctx, "Audio input for Looper :")
     drawRecInputCombo()
 
-    if reaper.ImGui_Button(ctx, "Ajouter looper") then
+    if reaper.ImGui_Button(ctx, "Add looper") then
         addLooper()
     end
 
@@ -1473,7 +1501,7 @@ local function DrawTools()
     reaper.ImGui_Separator(ctx)
     
     -- Partie 2: Rendu audio
-    reaper.ImGui_Text(ctx, "Rendu audio :")
+    reaper.ImGui_Text(ctx, "Audio rendering :")
     reaper.ImGui_Separator(ctx)
     
     -- Radio buttons pour le mode de rendu
@@ -1492,13 +1520,13 @@ local function DrawTools()
     reaper.ImGui_Separator(ctx)
     
     -- Partie 3: Importation ALK
-    reaper.ImGui_Text(ctx, "Importation ALK :")
+    reaper.ImGui_Text(ctx, "ALK importation :")
     reaper.ImGui_Separator(ctx)
     
-    reaper.ImGui_Text(ctx, "Fichier ALK: " .. ((alkData and "(chargé)") or "aucun"))
+    reaper.ImGui_Text(ctx, "ALK file: " .. ((alkData and "(loaded)") or "none"))
     reaper.ImGui_SameLine(ctx)
-    if reaper.ImGui_Button(ctx, "Ouvrir .alk") then
-        local ret, file = reaper.GetUserFileNameForRead("", "Fichier ALK", "alk")
+    if reaper.ImGui_Button(ctx, "Open .alk") then
+        local ret, file = reaper.GetUserFileNameForRead("", "ALK file", "alk")
         if ret then
             local content, err = alk.readFile(file)
             if not content then
@@ -1509,34 +1537,34 @@ local function DrawTools()
         end
     end
 
-    if alkData and reaper.ImGui_Button(ctx, "Importer le projet ALK") then
+    if alkData and reaper.ImGui_Button(ctx, "Import project ALK") then
         alk.importProject(alkData)
     end
 
     reaper.ImGui_SameLine(ctx)
-    if reaper.ImGui_Button(ctx, "Préparer pour PoulpyLoopy") then
+    if reaper.ImGui_Button(ctx, "Prepare for PoulpyLoopy") then
         core.ProcessMIDINotes()
-        reaper.ShowMessageBox("Préparation pour PoulpyLoopy terminée avec succès !", "Opération terminée", 0)
+        reaper.ShowMessageBox("PoulpyLoopy preparation completed successfully!", "Operation completed", 0)
     end
 
     if errorMessage and #errorMessage > 0 then
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF0000FF)
-        reaper.ImGui_Text(ctx, "Erreur: " .. errorMessage)
+        reaper.ImGui_Text(ctx, "Error: " .. errorMessage)
         reaper.ImGui_PopStyleColor(ctx)
     end
 
     reaper.ImGui_Separator(ctx)
 
     -- Partie 4: Automation du clic
-    reaper.ImGui_Text(ctx, "Automation du clic :")
+    reaper.ImGui_Text(ctx, "Click automation :")
     reaper.ImGui_Separator(ctx)
     
     -- Menu déroulant pour les pistes de type Command
     if alkData then
         local commandTracks = alkData.trackTypes[3].tracks or {}
-        local trackLabel = (#commandTracks > 0 and commandTracks[selected_click_track_index + 1].name) or "Aucune piste"
+        local trackLabel = (#commandTracks > 0 and commandTracks[selected_click_track_index + 1].name) or "No track"
         
-        reaper.ImGui_Text(ctx, "Piste d'automation du clic :")
+        reaper.ImGui_Text(ctx, "Click automation track :")
         if reaper.ImGui_BeginCombo(ctx, "##ClickTrack", trackLabel) then
             for i, tr in ipairs(commandTracks) do
                 local is_sel = (selected_click_track_index == i - 1)
@@ -1551,17 +1579,17 @@ local function DrawTools()
         end
 
         -- Bouton pour appliquer l'automation
-        if reaper.ImGui_Button(ctx, "Appliquer automation clic") then
+        if reaper.ImGui_Button(ctx, "Apply click automation") then
             alk.importMetronome(alkData, selected_click_track_index)
         end
     else
-        reaper.ImGui_Text(ctx, "Chargez d'abord un fichier ALK pour accéder aux pistes d'automation.")
+        reaper.ImGui_Text(ctx, "Load an ALK file first to access the automation tracks.")
     end
 
     reaper.ImGui_Separator(ctx)
     
     -- Partie 5: Mise à jour globale
-    reaper.ImGui_Text(ctx, "Mise à jour globale :")
+    reaper.ImGui_Text(ctx, "Global update :")
     reaper.ImGui_Separator(ctx)
     
     -- Bouton avec style spécial pour la mise à jour globale
@@ -1569,13 +1597,13 @@ local function DrawTools()
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0xBA68C8FF)  -- Violet plus clair
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x9C27B0FF)  -- Violet plus foncé
     
-    if reaper.ImGui_Button(ctx, "Mettre à jour tous les blocs") then
+    if reaper.ImGui_Button(ctx, "Update all blocks") then
         -- Demander confirmation
         local confirm = reaper.ShowMessageBox(
-            "Cette opération va mettre à jour tous les blocs du projet pour les rendre compatibles avec la dernière version.\n\n" ..
-            "Cette opération peut prendre un certain temps selon la taille du projet.\n\n" ..
-            "Voulez-vous continuer ?",
-            "Confirmation de mise à jour globale",
+            "This operation will update all the project blocks to be compatible with the latest version.\n\n" ..
+            "This operation can take a certain time depending on the size of the project.\n\n" ..
+            "Do you want to continue ?",
+            "Global update confirmation",
             4)  -- 4 = Yes/No
         
         if confirm == 6 then  -- 6 = Yes
@@ -1593,15 +1621,15 @@ local function DrawTools()
 end
 
 local function DrawStats()
-    reaper.ImGui_Text(ctx, "Statistiques des instances de PoulpyLoop :")
+    reaper.ImGui_Text(ctx, "PoulpyLoop instance statistics :")
     reaper.ImGui_Separator(ctx)
     
     -- En-têtes du tableau
     reaper.ImGui_BeginTable(ctx, "stats_table", 4, reaper.ImGui_TableFlags_Borders() | reaper.ImGui_TableFlags_RowBg())
     reaper.ImGui_TableSetupColumn(ctx, "ID", reaper.ImGui_TableColumnFlags_WidthFixed(), 50)
-    reaper.ImGui_TableSetupColumn(ctx, "Mémoire utilisée", reaper.ImGui_TableColumnFlags_WidthStretch())
-    reaper.ImGui_TableSetupColumn(ctx, "Temps restant", reaper.ImGui_TableColumnFlags_WidthStretch())
-    reaper.ImGui_TableSetupColumn(ctx, "Notes actives", reaper.ImGui_TableColumnFlags_WidthStretch())
+    reaper.ImGui_TableSetupColumn(ctx, "Memory used", reaper.ImGui_TableColumnFlags_WidthStretch())
+    reaper.ImGui_TableSetupColumn(ctx, "Time remaining", reaper.ImGui_TableColumnFlags_WidthStretch())
+    reaper.ImGui_TableSetupColumn(ctx, "Active notes", reaper.ImGui_TableColumnFlags_WidthStretch())
     reaper.ImGui_TableHeadersRow(ctx)
     
     -- Variables pour les statistiques totales
@@ -1646,23 +1674,23 @@ local function DrawStats()
     
     -- Informations supplémentaires
     reaper.ImGui_Separator(ctx)
-    reaper.ImGui_Text(ctx, string.format("Nombre total d'instances actives : %d", total_instances))
-    reaper.ImGui_Text(ctx, string.format("Mémoire totale utilisée : %.1f MB", total_memory))
-    reaper.ImGui_Text(ctx, string.format("Total des notes actives : %d", total_notes))
+    reaper.ImGui_Text(ctx, string.format("Total number of active instances : %d", total_instances))
+    reaper.ImGui_Text(ctx, string.format("Total memory used : %.1f MB", total_memory))
+    reaper.ImGui_Text(ctx, string.format("Total number of active notes : %d", total_notes))
 end
 
 local function DrawDebug()
     -- État de lecture actuel
     local play_state = reaper.GetPlayState()
     local is_playing = play_state & 1
-    reaper.ImGui_Text(ctx, "État de lecture: ")
+    reaper.ImGui_Text(ctx, "Play state: ")
     reaper.ImGui_SameLine(ctx)
     if is_playing == 1 then
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x55FF55FF) -- Vert pour LECTURE
-        reaper.ImGui_Text(ctx, "LECTURE")
+        reaper.ImGui_Text(ctx, "PLAY")
     else
         reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0xFF5555FF) -- Rouge pour ARRÊTÉ
-        reaper.ImGui_Text(ctx, "ARRÊTÉ")
+        reaper.ImGui_Text(ctx, "STOP")
     end
     reaper.ImGui_PopStyleColor(ctx)
     
@@ -1680,9 +1708,9 @@ local function DrawDebug()
     
     -- Boutons d'action
     reaper.ImGui_Separator(ctx)
-    if reaper.ImGui_Button(ctx, "Forcer l'analyse des offsets") then
+    if reaper.ImGui_Button(ctx, "Force offset analysis") then
         reaper.gmem_write(GMEM.FORCE_ANALYZE, 1)
-        debug_console("Demande d'analyse forcée des offsets envoyée\n")
+        debug_console("Forced offset analysis request sent\n")
     end
 end
 
@@ -1728,6 +1756,89 @@ local function calculateRequiredHeight()
     
 end
 
+-- Fonction pour calculer la hauteur nécessaire des onglets Options et Tools
+local function calculateTabsHeight()
+    local base_height = 18  -- Hauteur de base pour les éléments fixes
+    local item_height = 22   -- Hauteur approximative par élément
+    local content_height = base_height
+    
+    -- Calculer la hauteur pour l'onglet Options
+    content_height = content_height + (6 * item_height)  -- Radio buttons et séparateurs
+    
+    -- Calculer la hauteur pour l'onglet Tools
+    content_height = content_height + (12 * item_height)  -- Boutons, séparateurs et contrôles
+    
+    -- Ajouter une marge et s'assurer d'une hauteur minimale
+    return math.max(400, content_height)
+end
+
+-- Fonctions pour calculer la hauteur nécessaire pour chaque onglet
+local function calculateLoopEditorHeight()
+    local base_height = 18  -- Hauteur de base pour les éléments fixes
+    local item_height = 22   -- Hauteur approximative par élément
+    local content_height = base_height
+    
+    -- Vérifier si la take existe toujours et est valide
+    if current_take and reaper.ValidatePtr2(0, current_take, "MediaItem_Take*") and reaper.TakeIsMIDI(current_take) then
+        local loop_type = loop_types[selected_loop_type_index + 1]
+        
+        -- Ajouter la hauteur pour les éléments communs
+        content_height = content_height + (3 * item_height)  -- Note MIDI, séparateur, nombre d'éléments
+        
+        -- Ajouter la hauteur selon le type de loop
+        if loop_type == "RECORD" then
+            content_height = content_height + (6 * item_height)  -- Type, Nom, Mono/Stereo, Pan, Vol, Monitoring
+        elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
+            content_height = content_height + (7 * item_height)  -- Type, Réf, Mono/Stereo, Pan, Vol, Monitoring, Pitch
+        elseif loop_type == "MONITOR" then
+            content_height = content_height + (5 * item_height)  -- Type, Mono/Stereo, Pan, Vol, Monitoring
+        end
+        
+        -- Ajouter la hauteur pour la section modulation
+        content_height = content_height + (2 * item_height)  -- Séparateur et bouton Modulation
+        if show_modulation then
+            content_height = content_height + (#modulation_params * item_height)  -- Faders de modulation
+        end
+        
+        -- Ajouter la hauteur pour le bouton Appliquer et le message de progression
+        content_height = content_height + (2 * item_height)
+    else
+        -- Si aucun take n'est sélectionné
+        content_height = content_height + item_height
+    end
+    
+    return math.max(270, content_height)
+end
+
+local function calculateOptionsHeight()
+    local base_height = 50
+    local item_height = 22
+    local content_height = base_height
+    
+    -- Radio buttons et séparateurs de base
+    content_height = content_height + (6 * item_height)
+    
+    -- Ajouter de l'espace pour chaque piste du projet
+    local num_tracks = reaper.CountTracks(0)
+    content_height = content_height + (num_tracks * item_height)
+    
+    -- Ajouter une marge supplémentaire pour la lisibilité
+    content_height = content_height + 50
+    
+    return math.max(200, content_height)
+end
+
+local function calculateToolsHeight()
+    local base_height = 150
+    local item_height = 22
+    local content_height = base_height
+    
+    -- Boutons, séparateurs et contrôles
+    content_height = content_height + (12 * item_height)
+    
+    return math.max(300, content_height)
+end
+
 --------------------------------------------------------------------------------
 -- Fenêtre principale
 --------------------------------------------------------------------------------
@@ -1735,13 +1846,6 @@ local function DrawMainWindow()
     -- Charger les valeurs depuis gmem au début de chaque frame
     record_monitor_loops = get_record_monitor_loops_mode()
     playback_mode = get_playback_mode()
-
-    -- Calculer la nouvelle hauteur requise
-    local new_height = calculateRequiredHeight()
-    if new_height ~= window_height then
-        window_height = new_height
-        reaper.ImGui_SetNextWindowSize(ctx, window_width, window_height, reaper.ImGui_Cond_Always())
-    end
 
     reaper.ImGui_SetNextWindowPos(ctx, 100, 50, reaper.ImGui_Cond_FirstUseEver())
     
@@ -1753,25 +1857,35 @@ local function DrawMainWindow()
             window_width = current_width
             reaper.SetExtState("PoulpyLoopy", "window_width", tostring(window_width), true)
         end
+        
+        -- Déterminer l'onglet actif et calculer la hauteur
+        local active_tab = "Loop Editor"  -- Onglet par défaut
+        local new_height
+        
         if reaper.ImGui_BeginTabBar(ctx, "MainTabs") then
             -- Onglet "Loop Editor"
             if reaper.ImGui_BeginTabItem(ctx, "Loop Editor") then
+                active_tab = "Loop Editor"
                 DrawLoopEditor()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
             -- Onglet "Options"
             if reaper.ImGui_BeginTabItem(ctx, "Options") then
+                active_tab = "Options"
                 DrawOptions()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
             -- Onglet "Tools"
             if reaper.ImGui_BeginTabItem(ctx, "Tools") then
+                active_tab = "Tools"
                 DrawTools()
                 reaper.ImGui_EndTabItem(ctx)
             end
             
+            -- Onglets masqués temporairement
+            --[[
             -- Onglet "Stats"
             if reaper.ImGui_BeginTabItem(ctx, "Stats") then
                 DrawStats()
@@ -1783,11 +1897,27 @@ local function DrawMainWindow()
                 DrawDebug()
                 reaper.ImGui_EndTabItem(ctx)
             end
+            ]]--
             
             reaper.ImGui_EndTabBar(ctx)
+            
+            -- Calculer la hauteur après avoir déterminé l'onglet actif
+            if active_tab == "Loop Editor" then
+                new_height = calculateLoopEditorHeight()
+            elseif active_tab == "Options" then
+                new_height = calculateOptionsHeight()
+            elseif active_tab == "Tools" then
+                new_height = calculateToolsHeight()
+            end
+            
+            -- Appliquer la nouvelle hauteur si nécessaire
+            if new_height and new_height ~= window_height then
+                window_height = new_height
+                reaper.ImGui_SetWindowSize(ctx, window_width, window_height)
+            end
         end
         
-        if reaper.ImGui_Button(ctx, "Fermer la fenêtre") then
+        if reaper.ImGui_Button(ctx, "Close window") then
             open = false
         end
     end
