@@ -651,11 +651,11 @@ loop(NUM_NOTES,
     (playback_mode == 0 && (loop_type[i] == 0 || loop_type[i] == 2 || (loop_type[i] == 3 && get_record_monitor_loops_mode() == 1))) ? (
       // Appliquer volume/pan/mode *COURANTS* avant l'enregistrement
       (mode == 0) ? ( // Mono
-        recL = inL * volumeFactor * gainL;
-        recR = inL * volumeFactor * gainR;  // Même signal en mono
+        recL = inL * gainL;  // Enlever volumeFactor ici
+        recR = inL * gainR;  // Même signal en mono, enlever volumeFactor ici
       ) : ( // Stereo
-        recL = inL * volumeFactor * gainL;
-        recR = inR * volumeFactor * gainR;
+        recL = inL * gainL;  // Enlever volumeFactor ici
+        recR = inR * gainR;  // Enlever volumeFactor ici
       );
 
       // Position d'écriture - pour OVERDUB, utiliser le même loopPos que pour la lecture

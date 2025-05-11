@@ -263,7 +263,7 @@ end
 local function addLooper()
     local selCount = reaper.CountSelectedTracks(0)
     if selCount == 0 then
-        reaper.ShowMessageBox("Aucune piste sélectionnée.", "Erreur", 0)
+        reaper.ShowMessageBox("No track selected.", "Error", 0)
         return
     end
 
@@ -558,6 +558,55 @@ local function DrawLoopEditor()
     local item = reaper.GetSelectedMediaItem(0, 0)
     local take = item and reaper.GetActiveTake(item)
     local is_midi = take and reaper.TakeIsMIDI(take)
+    
+    -- Bouton pour basculer entre LIVE et PLAYBACK
+    -- Définir les couleurs pour le bouton
+    local button_color
+    local button_text
+    
+    if playback_mode then
+        -- Mode PLAYBACK: vert
+        button_color = 0x22CC66EE -- Format ABGR: vert
+        button_text = "PLAYBACK"
+    else
+        -- Mode LIVE: rouge
+        --button_color = 0xFF0000EE -- Format ABGR: rouge
+        button_color = 0xEB3440EE -- Format ABGR: rouge
+        button_text = "LIVE"
+    end
+    
+    -- Centrer le bouton et utiliser toute la largeur disponible
+    local avail_width = reaper.ImGui_GetContentRegionAvail(ctx)
+    local button_width = avail_width
+    
+    -- Définir la couleur du bouton
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), button_color)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), button_color + 0x00303030) -- Légèrement plus clair au survol
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), button_color + 0x00505050) -- Encore plus clair quand cliqué
+    
+    -- Rendre le bouton plus grand
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 10, 5)
+    
+    -- Créer le bouton
+    if reaper.ImGui_Button(ctx, button_text, button_width, 0) then
+        playback_mode = not playback_mode
+        save_playback_mode(playback_mode)
+    end
+    
+    -- Restaurer les styles
+    reaper.ImGui_PopStyleVar(ctx)
+    reaper.ImGui_PopStyleColor(ctx, 3)
+    
+    -- Ajouter un tooltip
+    if reaper.ImGui_IsItemHovered(ctx) then
+        if playback_mode then
+            reaper.ImGui_SetTooltip(ctx, "Currently in PLAYBACK mode (read-only). Click to switch to LIVE mode.")
+        else
+            reaper.ImGui_SetTooltip(ctx, "Currently in LIVE mode. Click to switch to PLAYBACK mode (read-only).")
+        end
+    end
+    
+    reaper.ImGui_Separator(ctx)
     
     -- N'afficher l'éditeur que si on a un item MIDI
     if is_midi then
@@ -1758,7 +1807,7 @@ end
 
 -- Fonction pour calculer la hauteur nécessaire des onglets Options et Tools
 local function calculateTabsHeight()
-    local base_height = 18  -- Hauteur de base pour les éléments fixes
+    local base_height = 50  -- Hauteur de base pour les éléments fixes
     local item_height = 22   -- Hauteur approximative par élément
     local content_height = base_height
     
@@ -1774,7 +1823,7 @@ end
 
 -- Fonctions pour calculer la hauteur nécessaire pour chaque onglet
 local function calculateLoopEditorHeight()
-    local base_height = 18  -- Hauteur de base pour les éléments fixes
+    local base_height = 55  -- Hauteur de base pour les éléments fixes
     local item_height = 22   -- Hauteur approximative par élément
     local content_height = base_height
     
@@ -1811,7 +1860,7 @@ local function calculateLoopEditorHeight()
 end
 
 local function calculateOptionsHeight()
-    local base_height = 50
+    local base_height = 60
     local item_height = 22
     local content_height = base_height
     
@@ -1851,6 +1900,39 @@ local function DrawMainWindow()
     
     local visible, open = reaper.ImGui_Begin(ctx, "PoulpyLoopy v" .. VERSION, true)
     if visible then
+        -- Vérifier si un champ de texte est actif
+        local textInputActive = reaper.ImGui_IsAnyItemActive(ctx)
+        
+        -- Si aucun champ de texte n'est actif, transmettre les touches
+        if not textInputActive then
+            -- Barre d'espace pour Play/Stop
+            if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Space()) then
+                reaper.Main_OnCommand(40044, 0) -- Play/stop
+            end
+            
+            -- Touche Home
+            if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Home()) then
+                reaper.Main_OnCommand(40042, 0) -- Aller au début
+            end
+
+            -- Touche 1 start of loop
+            if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Keypad1()) then
+                reaper.Main_OnCommand(40632, 0) -- Aller au début
+            end
+
+            -- Touche 2 end of loop
+            if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Keypad2()) then
+                reaper.Main_OnCommand(40633, 0) -- Aller au début
+            end
+            
+            -- Autres touches de contrôle courantes
+            if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Escape()) then
+                reaper.Main_OnCommand(1016, 0) -- Stop
+            end
+            
+
+        end
+    
         -- Sauvegarder la largeur de la fenêtre si elle a été redimensionnée
         local current_width = reaper.ImGui_GetWindowWidth(ctx)
         if current_width ~= window_width then
