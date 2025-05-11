@@ -29,6 +29,7 @@ NUM_NOTES = 128;
 UNIT_SIZE = 4096 * 64;
 max_units = 32000000 / UNIT_SIZE;
 
+
 debug_str     = 0;
 debug_str2    = 50; // Nouveau buffer pour le débogage
 time_left_str = 100;
@@ -42,7 +43,12 @@ read_pos      = is_recording  + NUM_NOTES;
 rec_mode      = read_pos      + NUM_NOTES;
 next_free_unit = rec_mode     + NUM_NOTES;
 modulation_values = next_free_unit + NUM_NOTES;
-the_memory    = modulation_values + 20;
+// Réservation mémoire pour la liste des notes actives (128 max)
+active_notes = modulation_values + 20; // 128 cases pour les notes actives
+// Mémoire audio principale, commence juste après active_notes
+// (aucun risque de collision avec les autres structures)
+the_memory = active_notes + NUM_NOTES;
+num_active_notes = 0;
 
 // Variable unique pour la longueur temporaire
 temp_block_length = 0;
@@ -86,10 +92,6 @@ last_monitoring = -1;
 // Variable pour stocker le dernier pitch
 last_pitch = 0.5; // Valeur par défaut (milieu)
 
-// Variables pour la synchronisation des offsets
-using_offsets = 0;
-offset_position = 0;
-measure_duration = 0;
 play_state = 0;
 track_id_found = -1;
 
@@ -105,13 +107,6 @@ GMEM_NEXT_INSTANCE_ID = 194;   // gmem[194] pour le prochain ID d'instance dispo
 GMEM_MONITORING_STOP_BASE = 195;  // gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
 GMEM_NOTE_START_POS_BASE = 259;  // gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
 GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
-
-// Nouveaux indices pour la synchronisation MIDI
-GMEM_MIDI_SYNC_DATA_BASE = 16001; // gmem[16001] à gmem[16001+64*3-1] pour les données de synchronisation MIDI (64 pistes max)
-
-// Variable pour stocker l'offset en cours pour cette instance
-current_offset = 0; // Valeur en secondes
-has_offset = 0;     // Flag indiquant si un offset valide est disponible
 
 // Chercher un ID unique pour cette instance
 function get_unique_instance_id()
@@ -344,20 +339,6 @@ play_position = play_position_samples / srate;
 prev_play_state = play_state;
 play_state = (play_state > 0) ? 1 : 0;
 
-// Lire l'offset pour cette instance depuis la mémoire partagée
-sync_base = GMEM_MIDI_SYNC_DATA_BASE + instance_id * 3;
-track_id = gmem[sync_base];
-offset_position = gmem[sync_base + 1];
-measure_duration = gmem[sync_base + 2];
-
-// Mettre à jour la variable using_offsets pour l'affichage dans l'interface
-using_offsets = (offset_position > 0 && measure_duration > 0) ? 1 : 0;
-
-// Message de débogage
-/*sprintf(debug_str, "État: %s | Track: %d | Offset: %.3f | Durée: %.3f", 
-         play_state ? "PLAYING" : "STOPPED",
-         track_id, offset_position, measure_duration);
-*/
 // Variable pour suivre si des notes ont été traitées dans ce bloc
 midi_notes_processed = 0;
 
@@ -404,6 +385,18 @@ while (
 
     (status == $x90 && vel > 0) ? (  // Note ON
       (idx >= 0) ? (
+        // Ajout à la liste des notes actives si pas déjà présente
+        found = 0;
+        j = 0;
+        loop(num_active_notes,
+          (active_notes[j] == idx) ? (found = 1;);
+          j += 1;
+        );
+        (found == 0) ? (
+          active_notes[num_active_notes] = idx;
+          num_active_notes += 1;
+        );
+
         // Pour les blocs RECORD ou MONITOR, afficher la longueur attendue
         ((vel == 1 || vel == 4) && temp_block_length > 0) ? (
           sprintf(debug_str2, "Expected length: %.1f tenth of a second", temp_block_length);
@@ -414,7 +407,7 @@ while (
         
         // Stocker la position de début de la note dans gmem
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
-        gmem[note_pos_index] = play_position + offset / srate;
+        gmem[note_pos_index] = play_position;
         
         // Afficher les valeurs de modulation pour cette note
         sprintf(debug_str, "\n\nModulations for note %d:", idx);
@@ -535,10 +528,6 @@ while (
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
         gmem[note_pos_index] = -1;
         
-        // Réinitialiser l'offset pour cette instance
-        sync_base = GMEM_MIDI_SYNC_DATA_BASE + instance_id * 3;
-        gmem[sync_base + 1] = 0;  // Offset = 0
-        
         is_playing[idx] = 0;
         is_recording[idx] = 0;
         loop_type[idx] = -1;
@@ -554,6 +543,21 @@ while (
           midisend(offset, $xB0, 9, 64);
         );
         strcpy(current_display, "Note off");
+
+        // Retrait de la liste des notes actives
+        j = 0;
+        loop(num_active_notes,
+          (active_notes[j] == idx) ? (
+            k = j;
+            loop(num_active_notes - j - 1,
+              active_notes[k] = active_notes[k+1];
+              k += 1;
+            );
+            num_active_notes -= 1;
+            break;
+          );
+          j += 1;
+        );
       );
     );
     offset += 1;
@@ -593,37 +597,36 @@ any_loop_active = 0;
 playback_mode = get_playback_mode();
 
 i = 0;
-loop(NUM_NOTES,
-  (loop_type[i] != -1) ? (  // Boucle active
+loop(num_active_notes,
+  n = active_notes[i];
+  (loop_type[n] != -1) ? (  // Boucle active
     any_loop_active = 1;
-    curLen = note_length[i];
-    unitCount = units_count[i];
+    curLen = note_length[n];
+    unitCount = units_count[n];
     capacity = unitCount * UNIT_SIZE;
     
     // Incrémenter read_pos pour la lecture, l'enregistrement et les blocs MONITOR
-    ((is_playing[i] || is_recording[i] || loop_type[i] == 3) && (curLen > 0 || is_recording[i] || loop_type[i] == 3)) ? (
-      read_pos[i] += 1;
+    ((is_playing[n] || is_recording[n] || loop_type[n] == 3) && (curLen > 0 || is_recording[n] || loop_type[n] == 3)) ? (
+      read_pos[n] += 1;
       // Pour les blocs MONITOR, on boucle sur temp_block_length
-      (loop_type[i] == 3 && temp_block_length > 0) ? (
-        (read_pos[i] >= temp_block_length * srate / 10) ? read_pos[i] = 0;
+      (loop_type[n] == 3 && temp_block_length > 0) ? (
+        (read_pos[n] >= temp_block_length * srate / 10) ? read_pos[n] = 0;
       ) : (
         // Pour les autres blocs, on boucle sur note_length
-        (read_pos[i] >= curLen && !is_recording[i]) ? read_pos[i] = 0;
+        (read_pos[n] >= curLen && !is_recording[n]) ? read_pos[n] = 0;
       );
-      pos = read_pos[i];
+      pos = read_pos[n];
       
       // Calculer la position de lecture effective avec l'offset
-      effective_pos = offset_position > 0 ? 
-        floor((pos + floor(offset_position * srate)) % curLen) : 
-        pos;
+      effective_pos = pos;
     ) : (
       // Si pas en lecture/enregistrement, maintenir la position actuelle
-      pos = read_pos[i];
+      pos = read_pos[n];
       effective_pos = pos;
     );
     
     // Lire le contenu actuel si en lecture ou en mode particulier
-    ((is_playing[i] && curLen > 0) || playback_mode == 1) ? (
+    ((is_playing[n] && curLen > 0) || playback_mode == 1) ? (
       // Calcul des enveloppes de fade
       fade_gain = 1.0;
       (fade_samples > 0) ? (
@@ -634,12 +637,12 @@ loop(NUM_NOTES,
         );
       );
       
-      (rec_mode[i] == 0) ? ( // MONO
-        sampleMono = the_memory[note_start[i] + effective_pos];
+      (rec_mode[n] == 0) ? ( // MONO
+        sampleMono = the_memory[note_start[n] + effective_pos];
         playL += sampleMono * volumeFactor * gainL * fade_gain;
         playR += sampleMono * volumeFactor * gainR * fade_gain;
       ) : ( // STEREO
-        baseOfs = note_start[i] + 2*effective_pos;
+        baseOfs = note_start[n] + 2*effective_pos;
         sampleL = the_memory[baseOfs];
         sampleR = the_memory[baseOfs+1];
         playL += sampleL * volumeFactor * gainL * fade_gain;
@@ -648,7 +651,7 @@ loop(NUM_NOTES,
     );
 
     // Gérer l'enregistrement après la lecture (uniquement en mode LIVE)
-    (playback_mode == 0 && (loop_type[i] == 0 || loop_type[i] == 2 || (loop_type[i] == 3 && get_record_monitor_loops_mode() == 1))) ? (
+    (playback_mode == 0 && (loop_type[n] == 0 || loop_type[n] == 2 || (loop_type[n] == 3 && get_record_monitor_loops_mode() == 1))) ? (
       // Appliquer volume/pan/mode *COURANTS* avant l'enregistrement
       (mode == 0) ? ( // Mono
         recL = inL * gainL;  // Enlever volumeFactor ici
@@ -659,39 +662,39 @@ loop(NUM_NOTES,
       );
 
       // Position d'écriture - pour OVERDUB, utiliser le même loopPos que pour la lecture
-      writePos = (loop_type[i] == 2) ? (pos % curLen) : curLen;
+      writePos = (loop_type[n] == 2) ? (pos % curLen) : curLen;
       
-      (loop_type[i] == 0 || loop_type[i] == 3) ? (  // RECORD ou MONITOR avec enregistrement
-        (rec_mode[i] == 0) ? ( // Mono
-          the_memory[note_start[i] + writePos] = recL;
+      (loop_type[n] == 0 || loop_type[n] == 3) ? (  // RECORD ou MONITOR avec enregistrement
+        (rec_mode[n] == 0) ? ( // Mono
+          the_memory[note_start[n] + writePos] = recL;
         ) : ( // Stereo
-          the_memory[note_start[i] + 2*writePos] = recL;
-          the_memory[note_start[i] + 2*writePos+1] = recR;
+          the_memory[note_start[n] + 2*writePos] = recL;
+          the_memory[note_start[n] + 2*writePos+1] = recR;
         );
-        
-        // Incrémenter la longueur uniquement pour RECORD ou MONITOR avec enregistrement
-        note_length[i] = curLen + 1;
-        (curLen + 1 >= capacity) ? (expandRecording(i));
-        
+        // Debug : afficher l'état d'enregistrement
+        sprintf(debug_str2, "REC n=%d curLen=%d cap=%d note_length=%d is_rec=%d", n, curLen, capacity, note_length[n], is_recording[n]);
+        // Correction : forcer note_length[n]=1 dès le premier sample
+        note_length[n] = (curLen == 0) ? 1 : curLen + 1;
+        (curLen + 1 >= capacity) ? (expandRecording(n));
       ) : (  // OVERDUB - ici on ADDITIONNE au lieu de remplacer
         (curLen > 0) ? (  // Seulement si on a déjà du contenu
-          (rec_mode[i] == 0) ? ( // Mono
-            the_memory[note_start[i] + writePos] += recL;
+          (rec_mode[n] == 0) ? ( // Mono
+            the_memory[note_start[n] + writePos] += recL;
           ) : ( // Stereo
-            the_memory[note_start[i] + 2*writePos] += recL;
-            the_memory[note_start[i] + 2*writePos+1] += recR;
+            the_memory[note_start[n] + 2*writePos] += recL;
+            the_memory[note_start[n] + 2*writePos+1] += recR;
           );
         ) : (
           // Si longueur=0 en OVERDUB, traiter comme RECORD
-          (rec_mode[i] == 0) ? ( // Mono
-            the_memory[note_start[i] + writePos] = recL;
+          (rec_mode[n] == 0) ? ( // Mono
+            the_memory[note_start[n] + writePos] = recL;
           ) : ( // Stereo
-            the_memory[note_start[i] + 2*writePos] = recL;
-            the_memory[note_start[i] + 2*writePos+1] = recR;
+            the_memory[note_start[n] + 2*writePos] = recL;
+            the_memory[note_start[n] + 2*writePos+1] = recR;
           );
-          // Incrémenter la longueur
-          note_length[i] = curLen + 1;
-          (curLen + 1 >= capacity) ? (expandRecording(i));
+          // Correction : forcer note_length[n]=1 dès le premier sample
+          note_length[n] = 1;
+          (curLen + 1 >= capacity) ? (expandRecording(n));
         );
       );
     );
