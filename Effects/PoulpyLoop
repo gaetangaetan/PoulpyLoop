@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0612 // je viens de comprendre le bug mono stereo (ce n'est pas réglé, d'ailleurs)
+desc:PoulpyLoop_v0613 // j'ai laissé tomber le bypass de la section block à l'arrêt
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
@@ -265,6 +265,28 @@ fade_samples = slider1;
 gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
+// Synchroniser le slider avec gmem
+slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
+
+// Désactivation des opérations inutiles si aucune note n'est active
+ //(!play_state) ?( //à l'arrêt, on n'exécute pas ce code
+ (false) ?( //pour le moment, on laisse tomber le bypass
+  // Réinitialiser les sliders de modulation
+//  i = 0;
+  //loop(MODULATION_COUNT,
+//    slider(i + 4) = 0;
+    //i += 1;
+  //);
+  // Réinitialiser les messages de debug
+ // sprintf(debug_str2, ""); 
+ // sprintf(time_left_str, "");
+  // Sauter le reste du code @block
+  testblock = 0;
+  
+):
+(
+
+testblock = 1;
 // Initialiser les valeurs de modulation si ce n'est pas déjà fait
 (modulation_values == 0) ? init_modulation_values();
 
@@ -571,11 +593,28 @@ time_left = samples_left / srate;
 sprintf(time_left_str, "Memo left: %.1f s", time_left);
 
 // Mettre à jour les statistiques dans gmem
-update_stats();
+//update_stats();
+
+)
 
 
 
 @sample
+// Bypass logiciel si aucune note active et monitoring désactivé
+(num_active_notes == 0 ) ? (
+  (!play_state && slider3)?(
+  spl0 = spl0;
+  spl1 = spl0;
+  ):(
+  spl0 = 0;
+  spl1 = 0;
+  )
+ ):
+ (
+
+ 
+
+
 inL = spl0;
 inR = spl1;
 
@@ -731,48 +770,48 @@ loop(num_active_notes,
   );
 );
 
+)
+
 @gfx
-gfx_clear = 0;
-gfx_setfont(1, "Arial", 30);
-gfx_set(1,1,1,1);
+
+//gfx_clear = 0;
+//gfx_setfont(1, "Arial", 30);
+//gfx_set(1,1,1,1);
 
 
 // Afficher l'état de lecture en haut
-gfx_x = 10;
-gfx_y = 10;
-gfx_set(1, 1, 1, 1);
-gfx_drawstr("Playstate: ");
-gfx_x += 200;
-(play_state >= 1) ? (
-  gfx_set(0.5, 1, 0.5, 1); // Vert pour LECTURE
-  gfx_drawstr("PLAYING");
-) : (
-  gfx_set(1, 0.5, 0.5, 1); // Rouge pour ARRÊTÉ
-  gfx_drawstr("STOPPED");
-);
+//gfx_x = 10;
+//gfx_y = 10;
+//gfx_set(1, 1, 1, 1);
+//gfx_drawstr("Playstate: ");
+//gfx_x += 200;
+//(play_state >= 1) ? (
+//  gfx_set(0.5, 1, 0.5, 1); // Vert pour LECTURE
+//  gfx_drawstr("PLAYING");
+//) : (
+//  gfx_set(1, 0.5, 0.5, 1); // Rouge pour ARRÊTÉ
+//  gfx_drawstr("STOPPED");
+//);
 
 // Afficher le mode actuel
-playback_mode = get_playback_mode();
-gfx_x = 10;
-gfx_y = 50;
+//playback_mode = get_playback_mode();
+//gfx_x = 10;
+//gfx_y = 50;
 
-(playback_mode != 1) ? (
-  gfx_set(1, 0.5, 0.5, 1); // ROUGE pour LIVE
-  gfx_drawstr("Mode: LIVE");
-) : (
-  gfx_set(0.5,1, 0.5, 1); // VERT pour PLAYBACK
-  gfx_drawstr("Mode: PLAYBACK");
-);
+//(playback_mode != 1) ? (
+//  gfx_set(1, 0.5, 0.5, 1); // ROUGE pour LIVE
+//  gfx_drawstr("Mode: LIVE");
+//) : (
+//  gfx_set(0.5,1, 0.5, 1); // VERT pour PLAYBACK
+//  gfx_drawstr("Mode: PLAYBACK");
+//);
 // Afficher la longueur attendue si présente
-gfx_x = 10;
-gfx_y = 90;
-gfx_set(1, 1, 1, 1);
-gfx_drawstr(debug_str2);
+//gfx_x = 10;
+//gfx_y = 90;
+//gfx_set(1, 1, 1, 1);
+//gfx_drawstr(debug_str2);
 
 // Afficher le temps restant
-gfx_x = 10;
-gfx_y = 130;
-gfx_drawstr(time_left_str);
-
-@bypass
-bypass = (num_active_notes == 0 && !monitoring) ? 1 : 0;
+//gfx_x = 10;
+//gfx_y = 130;
+//gfx_drawstr(time_left_str);
