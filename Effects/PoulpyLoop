@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0600 // debut simplification
+desc:PoulpyLoop_v0612 // je viens de comprendre le bug mono stereo (ce n'est pas réglé, d'ailleurs)
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
