@@ -52,6 +52,17 @@ local reference_loop = ""
 local pitch = 0
 local monitoring = 0
 local current_take = nil
+
+-- Variables pour l'automation de pitch
+local show_automation_dialog = false
+local selected_fx_index = 0
+local selected_param_index = 0
+local pitch_sensitivity = 5.0  -- % par demi-ton (défaut: 5%)
+local fx_list = {}
+local param_list = {}
+local automation_track = nil
+
+
 local current_midi_note = nil
 local current_midi_velocity = nil
 
@@ -519,6 +530,205 @@ local function destroyContext()
 end
 
 --------------------------------------------------------------------------------
+-- Fonctions d'automation de pitch
+--------------------------------------------------------------------------------
+
+-- Fonction pour rafraîchir la liste des FX
+function RefreshFXList()
+    fx_list = {}
+    param_list = {}
+    
+    if not automation_track then return end
+    
+    local fx_count = reaper.TrackFX_GetCount(automation_track)
+    for i = 0, fx_count - 1 do
+        local retval, fx_name = reaper.TrackFX_GetFXName(automation_track, i, "")
+        if retval then
+            fx_list[i] = {index = i, name = fx_name}
+        end
+    end
+end
+
+-- Fonction pour rafraîchir la liste des paramètres d'un FX
+function RefreshParamList(fx_index)
+    param_list = {}
+    
+    if not automation_track or fx_index < 0 then return end
+    
+    local param_count = reaper.TrackFX_GetNumParams(automation_track, fx_index)
+    for i = 0, param_count - 1 do
+        local retval, param_name = reaper.TrackFX_GetParamName(automation_track, fx_index, i, "")
+        if retval then
+            param_list[i] = {index = i, name = param_name}
+        end
+    end
+end
+
+-- Fonction pour générer l'automation de pitch
+function GeneratePitchAutomation(fx_index, param_index, sensitivity)
+    if not automation_track then return false end
+    
+    -- Obtenir l'envelope d'automation pour ce paramètre
+    local envelope = reaper.GetFXEnvelope(automation_track, fx_index, param_index, true)
+    if not envelope then return false end
+    
+    -- Effacer tous les points existants
+    reaper.DeleteEnvelopePointRange(envelope, 0, reaper.GetProjectLength(0))
+    
+    -- Collecter tous les blocs MIDI de la piste sélectionnée avec leurs positions et métadonnées
+    local project_blocks = {}
+    local num_items = reaper.CountTrackMediaItems(automation_track)
+    
+    for i = 0, num_items - 1 do
+        local item = reaper.GetTrackMediaItem(automation_track, i)
+        local take = reaper.GetActiveTake(item)
+        
+        if take and reaper.TakeIsMIDI(take) then
+            local loop_type = GetTakeMetadata(take, "loop_type")
+            if loop_type and loop_type ~= "UNUSED" then
+                local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+                local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+                local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
+                
+                table.insert(project_blocks, {
+                    start_time = item_start,
+                    end_time = item_start + item_length,
+                    pitch = pitch_val
+                })
+            end
+        end
+    end
+    
+    -- Trier les blocs par position temporelle
+    table.sort(project_blocks, function(a, b) return a.start_time < b.start_time end)
+    
+    -- Générer les points d'automation
+    local project_length = reaper.GetProjectLength(0)
+    local current_time = 0
+    local current_pitch = 0
+    
+    -- Point initial à 50% (pitch neutre)
+    reaper.InsertEnvelopePoint(envelope, current_time, 0.5, 0, 0, false, true)
+    
+    for _, block in ipairs(project_blocks) do
+        -- Si il y a un gap avant ce bloc, maintenir le pitch précédent
+        if block.start_time > current_time then
+            local pitch_value = 0.5 + (current_pitch * sensitivity / 100.0)
+            pitch_value = math.max(0, math.min(1, pitch_value))  -- Clamper entre 0 et 1
+            reaper.InsertEnvelopePoint(envelope, block.start_time, pitch_value, 0, 0, false, true)
+        end
+        
+        -- Point au début du bloc avec le nouveau pitch
+        local new_pitch_value = 0.5 + (block.pitch * sensitivity / 100.0)
+        new_pitch_value = math.max(0, math.min(1, new_pitch_value))
+        reaper.InsertEnvelopePoint(envelope, block.start_time, new_pitch_value, 0, 0, false, true)
+        
+        -- Point à la fin du bloc (maintenir le pitch)
+        reaper.InsertEnvelopePoint(envelope, block.end_time, new_pitch_value, 0, 0, false, true)
+        
+        current_time = block.end_time
+        current_pitch = block.pitch
+    end
+    
+    -- Point final jusqu'à la fin du projet
+    if current_time < project_length then
+        local final_pitch_value = 0.5 + (current_pitch * sensitivity / 100.0)
+        final_pitch_value = math.max(0, math.min(1, final_pitch_value))
+        reaper.InsertEnvelopePoint(envelope, project_length, final_pitch_value, 0, 0, false, true)
+    end
+    
+    -- Trier les points et actualiser l'affichage
+    reaper.Envelope_SortPoints(envelope)
+    reaper.UpdateArrange()
+    
+    return true
+end
+
+-- Fonction pour dessiner le dialogue d'automation
+function DrawAutomationDialog()
+    if not show_automation_dialog then return end
+    
+    local dialog_flags = reaper.ImGui_WindowFlags_AlwaysAutoResize() | 
+                        reaper.ImGui_WindowFlags_NoCollapse()
+    
+    local visible, open = reaper.ImGui_Begin(ctx, "Pitch Automation Setup", true, dialog_flags)
+    if visible then
+        reaper.ImGui_Text(ctx, "Configure pitch automation for track:")
+        if automation_track then
+            local _, track_name = reaper.GetTrackName(automation_track)
+            reaper.ImGui_Text(ctx, "  " .. (track_name or "Unnamed Track"))
+        end
+        
+        reaper.ImGui_Separator(ctx)
+        
+        -- Sélection de l'effet
+        reaper.ImGui_Text(ctx, "Select FX:")
+        if reaper.ImGui_BeginCombo(ctx, "##fx_combo", fx_list[selected_fx_index] and fx_list[selected_fx_index].name or "No FX") then
+            for i, fx in pairs(fx_list) do
+                if reaper.ImGui_Selectable(ctx, fx.name, i == selected_fx_index) then
+                    selected_fx_index = i
+                    RefreshParamList(i)
+                    selected_param_index = 0
+                end
+            end
+            reaper.ImGui_EndCombo(ctx)
+        end
+        
+        -- Sélection du paramètre
+        reaper.ImGui_Text(ctx, "Select Parameter:")
+        if reaper.ImGui_BeginCombo(ctx, "##param_combo", param_list[selected_param_index] and param_list[selected_param_index].name or "No Parameter") then
+            for i, param in pairs(param_list) do
+                if reaper.ImGui_Selectable(ctx, param.name, i == selected_param_index) then
+                    selected_param_index = i
+                end
+            end
+            reaper.ImGui_EndCombo(ctx)
+        end
+        
+        -- Configuration de la sensibilité
+        reaper.ImGui_Text(ctx, "Sensitivity (% per semitone):")
+        local changed
+        changed, pitch_sensitivity = reaper.ImGui_SliderDouble(ctx, "##sensitivity", pitch_sensitivity, 0.1, 20.0, "%.1f%%")
+        
+        reaper.ImGui_Separator(ctx)
+        
+        -- Aperçu des valeurs
+        reaper.ImGui_Text(ctx, "Preview:")
+        reaper.ImGui_Text(ctx, string.format("  Pitch +12: %.1f%%", 50 + (12 * pitch_sensitivity)))
+        reaper.ImGui_Text(ctx, string.format("  Pitch   0: %.1f%%", 50))
+        reaper.ImGui_Text(ctx, string.format("  Pitch -12: %.1f%%", 50 - (12 * pitch_sensitivity)))
+        
+        reaper.ImGui_Separator(ctx)
+        
+        -- Boutons d'action
+        if reaper.ImGui_Button(ctx, "Generate Automation") then
+            if fx_list[selected_fx_index] and param_list[selected_param_index] then
+                local success = GeneratePitchAutomation(selected_fx_index, selected_param_index, pitch_sensitivity)
+                if success then
+                    reaper.ShowMessageBox("Automation generated successfully!", "Pitch Automation", 0)
+                    show_automation_dialog = false
+                else
+                    reaper.ShowMessageBox("Failed to generate automation. Check FX and parameter selection.", "Error", 0)
+                end
+            else
+                reaper.ShowMessageBox("Please select both an FX and a parameter.", "Error", 0)
+            end
+        end
+        
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx, "Cancel") then
+            show_automation_dialog = false
+        end
+        
+        reaper.ImGui_End(ctx)
+    end
+    
+    if not open then
+        show_automation_dialog = false
+    end
+end
+
+--------------------------------------------------------------------------------
 -- Fonctions de dessin des onglets
 --------------------------------------------------------------------------------
 local function DrawLoopEditor()
@@ -964,6 +1174,22 @@ local function DrawLoopEditor()
         
         reaper.ImGui_PopStyleColor(ctx, 3)
 
+        -- Bouton "Update Pitch Automation" à droite du bouton "Insert click"
+        reaper.ImGui_SameLine(ctx)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x00BFFFEE)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x40CAFFEE)
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x008BFFEE)
+        
+        if reaper.ImGui_Button(ctx, "Update Pitch Automation") then
+            if item and take and is_midi then
+                automation_track = reaper.GetMediaItemTake_Track(take)
+                RefreshFXList()
+                show_automation_dialog = true
+            end
+        end
+        
+        reaper.ImGui_PopStyleColor(ctx, 3)
+
         -- Afficher le message de progression s'il existe
         if progress_message ~= "" then
             reaper.ImGui_Text(ctx, progress_message)
@@ -1270,87 +1496,29 @@ end
 
 -- Fonction pour mettre à jour un bloc
 local function UpdateBlock(take)
-    -- Sauvegarder la sélection actuelle
-    local old_sel_items = {}
-    for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
-        old_sel_items[s+1] = reaper.GetSelectedMediaItem(0, s)
+    -- Vérifier que le take est valide
+    if not take or not reaper.ValidatePtr2(0, take, "MediaItem_Take*") then
+        return
     end
     
-    -- Désélectionner tous les items
-    for _, sel_item in ipairs(old_sel_items) do
-        reaper.SetMediaItemSelected(sel_item, false)
-    end
-    
-    -- Sélectionner l'item à mettre à jour
     local item = reaper.GetMediaItemTake_Item(take)
-    reaper.SetMediaItemSelected(item, true)
-    
-    -- Forcer une mise à jour des données
-    UpdateTakeData(take)
-    
-    -- Simuler un clic sur le bouton Appliquer
-    if current_take then
-        local loop_type = GetTakeMetadata(take, "loop_type")
-        if loop_type == "RECORD" then
-            local valid, message = IsLoopNameValid(take, loop_name)
-            if valid then
-                local old_name = GetTakeMetadata(take, "loop_name") or ""
-                SetTakeMetadata(take, "loop_type", loop_type)
-                SetTakeMetadata(take, "loop_name", loop_name)
-                SetTakeMetadata(take, "is_mono", tostring(is_mono))
-                SetTakeMetadata(take, "pan", tostring(pan))
-                SetTakeMetadata(take, "volume_db", tostring(volume_db))
-                SetTakeMetadata(take, "monitoring", tostring(monitoring))
-
-                reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", loop_name, true)
-                reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.RECORD)
-                if old_name ~= "" and old_name ~= loop_name then
-                    UpdateDependentLoops(take, old_name, loop_name)
-                end
-                local track = reaper.GetMediaItemTake_Track(take)
-                ProcessMIDINotes(track)
-            end
-        elseif loop_type == "PLAY" then
-            SetTakeMetadata(take, "loop_type", loop_type)
-            SetTakeMetadata(take, "reference_loop", reference_loop)
-            SetTakeMetadata(take, "pan", tostring(pan))
-            SetTakeMetadata(take, "volume_db", tostring(volume_db))
-            SetTakeMetadata(take, "pitch", tostring(pitch))
-            SetTakeMetadata(take, "monitoring", tostring(monitoring))
-            for i, param in ipairs(modulation_params) do
-                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
-                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
-            end
-            reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
-            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.PLAY)
-        elseif loop_type == "OVERDUB" then
-            SetTakeMetadata(take, "loop_type", loop_type)
-            SetTakeMetadata(take, "reference_loop", reference_loop)
-            SetTakeMetadata(take, "pan", tostring(pan))
-            SetTakeMetadata(take, "volume_db", tostring(volume_db))
-            SetTakeMetadata(take, "is_mono", tostring(is_mono))
-            SetTakeMetadata(take, "monitoring", tostring(monitoring))
-            for i, param in ipairs(modulation_params) do
-                SetTakeMetadata(take, "mod_" .. i .. "_start", tostring(param.start_value))
-                SetTakeMetadata(take, "mod_" .. i .. "_end", tostring(param.end_value))
-            end
-            reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", reference_loop, true)
-            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.OVERDUB)
-        elseif loop_type == "MONITOR" then
-            SetTakeMetadata(take, "loop_type", loop_type)
-            SetTakeMetadata(take, "pan", tostring(pan))
-            SetTakeMetadata(take, "volume_db", tostring(volume_db))
-            SetTakeMetadata(take, "is_mono", tostring(is_mono))
-                            SetTakeMetadata(take, "monitoring", "1")
-            reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.MONITOR)
-        end
+    if not item then
+        return
     end
     
-    -- Restaurer la sélection originale
-    reaper.SetMediaItemSelected(item, false)
-    for _, sel_item in ipairs(old_sel_items) do
-        reaper.SetMediaItemSelected(sel_item, true)
+    -- Récupérer directement les métadonnées sans passer par les variables globales
+    local loop_type = GetTakeMetadata(take, "loop_type")
+    if not loop_type or loop_type == "" then
+        return
     end
+    
+    local track = reaper.GetMediaItemTake_Track(take)
+    if not track then
+        return
+    end
+    
+    -- Appliquer directement ProcessMIDINotes sur la piste pour régénérer les MIDI
+    ProcessMIDINotes(track)
 end
 
 -- Fonction pour mettre à jour tous les blocs du projet
@@ -1384,13 +1552,15 @@ local function UpdateAllBlocks()
             local item_count = reaper.CountTrackMediaItems(track)
             for i = 0, item_count - 1 do
                 local item = reaper.GetTrackMediaItem(track, i)
-                local take = reaper.GetActiveTake(item)
-                if take and reaper.TakeIsMIDI(take) and GetTakeMetadata(take, "loop_type") then
-                    table.insert(blocks_to_process, {
-                        take = take,
-                        item = item,
-                        track = track
-                    })
+                if item then
+                    local take = reaper.GetActiveTake(item)
+                    if take and reaper.TakeIsMIDI(take) and GetTakeMetadata(take, "loop_type") then
+                        table.insert(blocks_to_process, {
+                            take = take,
+                            item = item,
+                            track = track
+                        })
+                    end
                 end
             end
         end
@@ -1420,7 +1590,9 @@ local function UpdateAllBlocks()
         
         -- Traiter le bloc actuel
         local block = blocks_to_process[processed_blocks + 1]
-        UpdateBlock(block.take)
+        if block and block.take then
+            UpdateBlock(block.take)
+        end
         
         -- Mettre à jour le compteur et le message
         processed_blocks = processed_blocks + 1
@@ -1757,6 +1929,10 @@ local function DrawMainWindow()
     end
     
     reaper.ImGui_End(ctx)
+    
+    -- Dessiner le dialogue d'automation (fenêtre séparée)
+    DrawAutomationDialog()
+    
     return open
 end
 

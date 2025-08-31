@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0616 // début de la refonte totale
+desc:PoulpyLoop_v0618 // debug pitch guitar rig
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
@@ -10,16 +10,7 @@ out_pin:Right Out
 slider1:40<0,256,1>Fade (échantillons)
 slider2:0.0<-24,24,1>Pitch Control
 slider3:0<0,1,1{OFF,ON}>Monitoring à l'arrêt
-slider4:0<0,127,1>Mod 1 Start
-slider5:0<0,127,1>Mod 2 Start
-slider6:0<0,127,1>Mod 3 Start
-slider7:0<0,127,1>Mod 4 Start
-slider8:0<0,127,1>Mod 5 Start
-slider9:0<0,127,1>Mod 6 Start
-slider10:0<0,127,1>Mod 7 Start
-slider11:0<0,127,1>Mod 8 Start
-slider12:0<0,127,1>Mod 9 Start
-slider13:0<0,127,1>Mod 10 Start
+
 
 @init
 
@@ -227,6 +218,12 @@ gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 // Synchroniser le slider avec gmem
 slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
+// Envoi périodique du pitch pour forcer Guitar Rig à se synchroniser
+(num_active_notes > 0) ? (
+  // Envoyer CC09 avec la valeur actuelle du pitch pour forcer la synchronisation
+  midisend(0, $xB0, 9, slider2 + 64);
+);
+
 // Obtenir la position de lecture actuelle
 play_position = play_position_samples / srate;
 
@@ -391,17 +388,8 @@ while (
         is_playing[idx] = 0;
         is_recording[idx] = 0;
         loop_type[idx] = -1;
-        // Remettre le pitch à sa valeur par défaut quand aucune boucle n'est active
-        any_playing = 0;
-        i = 0;
-        loop(NUM_NOTES,
-          any_playing += (loop_type[i] == 1);
-          i += 1;
-        );
-        (any_playing == 0) ? (
-          // Envoyer CC09 = 64 pour un pitch de 0
-          midisend(offset, $xB0, 9, 64);
-        );
+        // Note: Le pitch est maintenant géré uniquement par les scripts Lua
+        // Pas de reset automatique pour préserver la cohérence entre blocs
         strcpy(current_display, "Note off");
 
         // Retrait de la liste des notes actives
