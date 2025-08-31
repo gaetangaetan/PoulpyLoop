@@ -601,15 +601,7 @@ local function ApplyMIDIChanges(take, item, midi_data)
     reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
     reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
     
-    -- Insérer les CC pour la modulation
-    for i = 1, 8 do  -- 8 paramètres de modulation
-        local start_value = tonumber(GetTakeMetadata(take, "mod_" .. i .. "_start")) or 0
-        local end_value = tonumber(GetTakeMetadata(take, "mod_" .. i .. "_end")) or 0
-        local start_cc = 20 + (i - 1) * 2  -- CCs 20, 22, 24, etc.
-        local end_cc = 21 + (i - 1) * 2    -- CCs 21, 23, 25, etc.
-        reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, start_cc, start_value, false)
-        reaper.MIDI_InsertCC(take, false, false, end_ppq, 0xB0, 0, end_cc, end_value, false)
-    end
+
     
     reaper.MIDI_Sort(take)
 end
