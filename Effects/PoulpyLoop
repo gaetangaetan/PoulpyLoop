@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0613 // j'ai laissé tomber le bypass de la section block à l'arrêt
+desc:PoulpyLoop_v0616 // début de la refonte totale
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
