@@ -36,6 +36,7 @@ local save_playback_mode = core.save_playback_mode
 local debug_console = core.debug_console
 local ApplyMIDIChanges = core.ApplyMIDIChanges
 
+
 -- Module à exporter
 local M = {}
 
