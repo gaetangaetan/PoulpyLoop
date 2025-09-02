@@ -87,6 +87,9 @@ cc108_val = 0; cc109_val = 0; cc110_val = 0;  // Valeurs des 3 CC
 play_state = 0;
 track_id_found = -1;
 
+// Variable pour stocker le dernier numéro de reset
+last_reset_number = 0;
+
 
 
 // Indices gmem pour les modes
@@ -97,6 +100,7 @@ GMEM_NEXT_INSTANCE_ID = 194;   // gmem[194] pour le prochain ID d'instance dispo
 GMEM_MONITORING_STOP_BASE = 195;  // gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
 GMEM_NOTE_START_POS_BASE = 259;  // gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
 GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
+GMEM_RESET_PLUGINS_BASE = 16200; // gmem[16200] à gmem[16200+64-1] pour les signaux de reset des plugins (64 instances max)
 
 // Chercher un ID unique pour cette instance
 function get_unique_instance_id()
@@ -220,6 +224,40 @@ fade_samples = slider1;
 gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 
 @block
+// Vérifier si un reset a été demandé pour cette instance
+reset_signal = gmem[GMEM_RESET_PLUGINS_BASE + instance_id];
+(reset_signal > 0) ? (
+  // Effectuer le reset complet
+  printf("RESET: Reset du plugin PoulpyLoop instance %d (adresse GMEM %d)\n", instance_id, GMEM_RESET_PLUGINS_BASE + instance_id);
+  
+  // Réinitialiser toutes les structures de données
+  i = 0;
+  loop(NUM_NOTES,
+    note_start[i] = 0;
+    note_length[i] = 0;
+    units_count[i] = 0;
+    is_playing[i] = 0;
+    is_recording[i] = 0;
+    read_pos[i] = 0;
+    rec_mode[i] = 0;
+    loop_type[i] = -1;
+    i += 1;
+  );
+  
+  // Réinitialiser le compteur d'allocation mémoire
+  next_free_unit[0] = 0;
+  
+  // Réinitialiser la liste des notes actives
+  num_active_notes = 0;
+  
+  // Réinitialiser les variables temporaires
+  temp_block_length = 0;
+  
+  // Stocker le numéro de reset et acquitter le signal
+  last_reset_number = reset_signal;
+  gmem[GMEM_RESET_PLUGINS_BASE + instance_id] = 0;
+);
+
 // Synchroniser le slider avec gmem
 slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
@@ -323,18 +361,24 @@ while (
               is_playing[idx] = 1;
               
               // Calculer l'offset basé sur beat_position et item_start_beats
-              (item_start_beats > 0 && note_length[idx] > 0) ? (
+              printf("DEBUG: RECORD beat_position=%.3f, item_start_beats=%.3f\n", beat_position, item_start_beats);
+              (note_length[idx] > 0) ? (
                 offset_beats = beat_position - item_start_beats;
-                (offset_beats > 0) ? (
+                printf("DEBUG: RECORD offset_beats=%.3f\n", offset_beats);
+                (offset_beats >= 0) ? (
                   loop_length_sec = note_length[idx] / srate;
                   loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
+                  printf("DEBUG: RECORD loop_length_beats=%.3f\n", loop_length_beats);
                   actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  // Correction: éviter le cas où offset_beats est exactement égal à loop_length_beats
+                  (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
+                  printf("DEBUG: RECORD actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
                 ) : (
                   read_pos[idx] = 0;
+                  printf("DEBUG: RECORD offset_beats < 0, read_pos=0\n");
                 );
-                printf("DEBUG: RECORD offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
               ) : (
                 read_pos[idx] = 0;
               );
@@ -359,18 +403,21 @@ while (
               is_playing[idx] = 1;
               
               // Calculer l'offset basé sur beat_position et item_start_beats
-              (item_start_beats > 0 && note_length[idx] > 0) ? (
+              (note_length[idx] > 0) ? (
                 offset_beats = beat_position - item_start_beats;
-                (offset_beats > 0) ? (
+                (offset_beats >= 0) ? (
                   loop_length_sec = note_length[idx] / srate;
                   loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
                   actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  // Correction: éviter le cas où offset_beats est exactement égal à loop_length_beats
+                  (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
+                  printf("DEBUG: PLAY actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
                 ) : (
                   read_pos[idx] = 0;
+                  printf("DEBUG: PLAY offset_beats < 0, read_pos=0\n");
                 );
-                printf("DEBUG: PLAY offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
               ) : (
                 read_pos[idx] = 0;
               );
@@ -398,18 +445,21 @@ while (
               is_playing[idx] = 1;
               
               // Calculer l'offset basé sur beat_position et item_start_beats
-              (item_start_beats > 0 && note_length[idx] > 0) ? (
+              (note_length[idx] > 0) ? (
                 offset_beats = beat_position - item_start_beats;
-                (offset_beats > 0) ? (
+                (offset_beats >= 0) ? (
                   loop_length_sec = note_length[idx] / srate;
                   loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
                   actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  // Correction: éviter le cas où offset_beats est exactement égal à loop_length_beats
+                  (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
+                  printf("DEBUG: OVERDUB actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
                 ) : (
                   read_pos[idx] = 0;
+                  printf("DEBUG: OVERDUB offset_beats < 0, read_pos=0\n");
                 );
-                printf("DEBUG: OVERDUB offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
               ) : (
                 read_pos[idx] = 0;
               );
@@ -441,18 +491,24 @@ while (
               is_playing[idx] = 1;
               
               // Calculer l'offset basé sur beat_position et item_start_beats
-              (item_start_beats > 0 && note_length[idx] > 0) ? (
+              printf("DEBUG: MONITOR beat_position=%.3f, item_start_beats=%.3f\n", beat_position, item_start_beats);
+              (note_length[idx] > 0) ? (
                 offset_beats = beat_position - item_start_beats;
-                (offset_beats > 0) ? (
+                printf("DEBUG: MONITOR offset_beats=%.3f\n", offset_beats);
+                (offset_beats >= 0) ? (
                   loop_length_sec = note_length[idx] / srate;
                   loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
+                  printf("DEBUG: MONITOR loop_length_beats=%.3f\n", loop_length_beats);
                   actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  // Correction: éviter le cas où offset_beats est exactement égal à loop_length_beats
+                  (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
+                  printf("DEBUG: MONITOR actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
                 ) : (
                   read_pos[idx] = 0;
+                  printf("DEBUG: MONITOR offset_beats < 0, read_pos=0\n");
                 );
-                printf("DEBUG: MONITOR offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
               ) : (
                 read_pos[idx] = 0;
               );
@@ -560,15 +616,8 @@ loop(num_active_notes,
     // Incrémenter read_pos pour la lecture, l'enregistrement et les blocs MONITOR
     ((is_playing[n] || is_recording[n]) && (curLen > 0 || is_recording[n])) ? (
       read_pos[n] += 1;
-      // Gestion spécifique du bouclage selon le type de bloc
-      (loop_type[n] == 3) ? (
-        // Pour les blocs MONITOR, utiliser temp_block_length ou curLen selon la validité
-        monitor_length = (temp_block_length > 0) ? (temp_block_length * srate / 10) : curLen;
-        (read_pos[n] >= monitor_length && !is_recording[n]) ? read_pos[n] = 0;
-      ) : (
-        // Pour les autres blocs, on boucle sur note_length
-        (read_pos[n] >= curLen && !is_recording[n]) ? read_pos[n] = 0;
-      );
+      // Gestion du bouclage identique pour tous les types de blocs
+      (read_pos[n] >= curLen && !is_recording[n]) ? read_pos[n] = 0;
       pos = read_pos[n];
       
       // Calculer la position de lecture effective avec l'offset
@@ -714,6 +763,12 @@ gfx_x = 10; gfx_y += 25;
 gfx_printf("Mode: %s", playback_mode == 1 ? "PLAYBACK" : "LIVE");
 gfx_x = 10; gfx_y += 25;
 
+// Affichage du dernier reset (permanent)
+gfx_r = 1; gfx_g = 0.5; gfx_b = 0;  // Orange pour le debug
+gfx_printf("Dernier reset: %d (Instance: %d)", last_reset_number, instance_id);
+gfx_x = 10; gfx_y += 25;
+
 // Affichage du status actuel  
+gfx_r = gfx_g = gfx_b = 1;  // Retour au blanc
 gfx_printf("Display: %s", current_display);
 

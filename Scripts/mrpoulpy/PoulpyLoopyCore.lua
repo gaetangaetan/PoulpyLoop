@@ -38,6 +38,7 @@ local GMEM = {
     LOOP_LENGTH_BASE = 8451,
     FORCE_ANALYZE = 16000,
     MIDI_SYNC_DATA_BASE = 16001,
+    RESET_PLUGINS_BASE = 16200,  -- Base pour les reset de plugins (64 instances max)
     AFFICHAGE_CONSOLE_DEBUG = 17100,
     MESSAGE_BASE = 17000,
     MESSAGE_LENGTH = 16999
@@ -345,15 +346,12 @@ local function WriteItemStartCCs(take, item_start_sec)
         (item_start_sixteenths >> 14) & 0x7F,   -- CC110: bits 14-20
     }
     
-    reaper.ShowConsoleMsg(string.format("DEBUG: item_start=%.3fs, beats=%.3f, sixteenths=%d\n", 
-        item_start_sec, item_start_beats, item_start_sixteenths))
-    reaper.ShowConsoleMsg(string.format("DEBUG: CC108=%d, CC109=%d, CC110=%d\n", 
-        values[1], values[2], values[3]))
+    -- Messages de debug supprimés pour éviter la pollution de la console
     
     -- Insérer les CC au tout début (PPQ = 0)
     for i, v in ipairs(values) do
         reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, 0, 107 + i, v, false)  -- CC108-110
-        reaper.ShowConsoleMsg(string.format("DEBUG: Inséré CC%d = %d\n", 107 + i, v))
+        -- Debug message supprimé
     end
 end
 
@@ -361,12 +359,7 @@ end
 -- Fonctions de gestion des notes MIDI
 --------------------------------------------------------------------------------
 local function ProcessMIDINotes(track_filter, return_data)
-    -- DEBUG: Message au tout début
-    reaper.ShowConsoleMsg("=== DEBUG: ProcessMIDINotes APPELÉE ===\n")
-    -- Test simple de la console
-    reaper.ShowConsoleMsg("TEST CONSOLE: Si vous voyez ce message, la console fonctionne!\n")
-    -- NOUVEAU TEST CRITIQUE
-    reaper.ShowConsoleMsg("***** TEST CRITIQUE: ProcessMIDINotes est vraiment appelé! *****\n")
+    -- Messages de debug supprimés pour éviter la pollution de la console
     
     local noteCounters = {}         -- par piste (clé = track_id)
     local recordLoopPitches = {}    -- par piste: mapping { loop_name -> pitch }
@@ -423,10 +416,7 @@ local function ProcessMIDINotes(track_filter, return_data)
         
         -- Écrire les CC de position de début d'item au tout début
         local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-        reaper.ShowConsoleMsg(string.format("DEBUG: Écriture CC108-110 pour item_start=%.3fs\n", item_start))
-        reaper.ShowConsoleMsg("***** AVANT APPEL WriteItemStartCCs *****\n")
         WriteItemStartCCs(take, item_start)
-        reaper.ShowConsoleMsg("***** APRÈS APPEL WriteItemStartCCs *****\n")
         
         local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         local item_end = item_start + item_length
@@ -512,8 +502,6 @@ local function ProcessMIDINotes(track_filter, return_data)
             reaper.MIDI_InsertCC(take, false, false, start_ppq + 4, 0xB0, 0, 11, monitoring_val, false)
             
             -- Les CC108-110 sont déjà écrits au début par WriteItemStartCCs
-            local playback_mode = (reaper.gmem_read(GMEM.PLAYBACK_MODE) == 1)
-            reaper.ShowConsoleMsg(string.format("DEBUG: Mode actuel = %s\n", playback_mode and "PLAYBACK" or "LIVE"))
         end
 
         reaper.MIDI_Sort(take)
@@ -546,6 +534,42 @@ end
 
 local function save_playback_mode(value)
     reaper.gmem_write(GMEM.PLAYBACK_MODE, value and 1 or 0)
+end
+
+-- Compteur global pour les resets (pour debug)
+local reset_counter = 0
+
+-- Fonction pour déclencher la réinitialisation d'un plugin PoulpyLoop sur une piste
+local function reset_poulpyloop_plugin(track)
+    if not track then return false end
+    
+    -- Trouver l'instance de PoulpyLoop sur cette piste
+    local fx_count = reaper.TrackFX_GetCount(track)
+    for i = 0, fx_count - 1 do
+        local retval, fx_name = reaper.TrackFX_GetFXName(track, i, "")
+        if retval and fx_name:match("PoulpyLoop") then
+            -- Obtenir l'ID de l'instance du plugin  
+            -- Pour l'instant, on utilise un mapping simple. Dans une version future,
+            -- on pourrait récupérer l'ID réel depuis le plugin via gmem
+            local instance_id = i % 64  -- Simple mapping basé sur l'index FX
+            
+            -- Incrémenter le compteur de reset
+            reset_counter = reset_counter + 1
+            
+            -- Reset global de toutes les instances (plus simple et robuste)
+            for instance_id = 0, 63 do
+                reaper.gmem_write(GMEM.RESET_PLUGINS_BASE + instance_id, reset_counter)
+            end
+            
+            -- Message de debug pour confirmer
+            reaper.ShowConsoleMsg(string.format("RESET %d envoyé pour toutes les instances sur piste '%s'\n", 
+                         reset_counter, reaper.GetTrackName(track)))
+            return true
+        end
+    end
+    
+    debug_console(string.format("Aucun plugin PoulpyLoop trouvé sur la piste %s\n", reaper.GetTrackName(track)))
+    return false
 end
 
 -- Fonction auxiliaire pour trouver la hauteur de note référencée pour un bloc PLAY ou OVERDUB
@@ -693,6 +717,7 @@ return {
     get_playback_mode = get_playback_mode,
     save_record_monitor_loops_mode = save_record_monitor_loops_mode,
     save_playback_mode = save_playback_mode,
+    reset_poulpyloop_plugin = reset_poulpyloop_plugin,
     FindReferenceNote = FindReferenceNote,
     ApplyMIDIChanges = ApplyMIDIChanges
 } 

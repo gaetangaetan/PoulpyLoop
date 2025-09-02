@@ -35,6 +35,7 @@ local save_record_monitor_loops_mode = core.save_record_monitor_loops_mode
 local save_playback_mode = core.save_playback_mode
 local debug_console = core.debug_console
 local ApplyMIDIChanges = core.ApplyMIDIChanges
+local reset_poulpyloop_plugin = core.reset_poulpyloop_plugin
 
 
 -- Module à exporter
@@ -958,7 +959,11 @@ local function DrawLoopEditor()
                         current_item_index = current_item_index + 1
                         reaper.defer(processNextItem)
                     else
-                        -- Traitement terminé - effacer le message et la liste
+                        -- Traitement terminé - déclencher la réinitialisation du plugin et effacer le message
+                        if #processing_items > 0 then
+                            local track = processing_items[1].track  -- Toutes les items sont sur la même piste
+                            reset_poulpyloop_plugin(track)
+                        end
                         progress_message = ""
                         processing_items = {}
                         midi_data = nil  -- Libérer les données MIDI
@@ -991,6 +996,8 @@ local function DrawLoopEditor()
                     end
                     local track = reaper.GetMediaItemTake_Track(take)
                     ProcessMIDINotes(track)
+                    -- Réinitialiser le plugin après modification
+                    reset_poulpyloop_plugin(track)
                 end
 
             elseif loop_type == "OVERDUB" then
@@ -1004,6 +1011,8 @@ local function DrawLoopEditor()
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.OVERDUB)
                 local track = reaper.GetMediaItemTake_Track(take)
                 ProcessMIDINotes(track)
+                -- Réinitialiser le plugin après modification
+                reset_poulpyloop_plugin(track)
 
             elseif loop_type == "PLAY" then
                 SetTakeMetadata(take, "loop_type", loop_type)
@@ -1017,6 +1026,8 @@ local function DrawLoopEditor()
                 local track = reaper.GetMediaItemTake_Track(take)
                 ProcessMIDINotes(track)
                 UnfoldPlayLoop(take)
+                -- Réinitialiser le plugin après modification
+                reset_poulpyloop_plugin(track)
 
             elseif loop_type == "MONITOR" then
                 SetTakeMetadata(take, "loop_type", loop_type)
@@ -1029,6 +1040,8 @@ local function DrawLoopEditor()
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.MONITOR)
                 local track = reaper.GetMediaItemTake_Track(take)
                 ProcessMIDINotes(track)
+                -- Réinitialiser le plugin après modification
+                reset_poulpyloop_plugin(track)
 
             elseif loop_type == "UNUSED" then
                 SetTakeMetadata(take, "loop_type", "UNUSED")
@@ -1040,6 +1053,8 @@ local function DrawLoopEditor()
                 reaper.SetMediaItemInfo_Value(item, "I_CUSTOMCOLOR", COLORS.UNUSED)
                 local track = reaper.GetMediaItemTake_Track(take)
                 ProcessMIDINotes(track)
+                -- Réinitialiser le plugin après modification
+                reset_poulpyloop_plugin(track)
             end
         end
         reaper.ImGui_PopStyleColor(ctx, 3)  -- Restaurer les couleurs
