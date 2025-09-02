@@ -558,7 +558,7 @@ loop(num_active_notes,
     capacity = unitCount * UNIT_SIZE;
     
     // Incrémenter read_pos pour la lecture, l'enregistrement et les blocs MONITOR
-    ((is_playing[n] || is_recording[n] || loop_type[n] == 3) && (curLen > 0 || is_recording[n] || loop_type[n] == 3)) ? (
+    ((is_playing[n] || is_recording[n]) && (curLen > 0 || is_recording[n])) ? (
       read_pos[n] += 1;
       // Gestion spécifique du bouclage selon le type de bloc
       (loop_type[n] == 3) ? (
