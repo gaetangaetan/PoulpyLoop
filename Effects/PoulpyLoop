@@ -79,6 +79,11 @@ last_monitoring = -1;
 // Variable pour stocker le dernier pitch
 last_pitch = 0.5; // Valeur par défaut (milieu)
 
+// Variables pour la position de début du bloc (mode PLAYBACK via CC108-110) 
+item_start_sixteenths = 0;  // Position de début en 1/16 beats  
+item_start_beats = 0.0;     // Position de début en beats (calculée)
+cc108_val = 0; cc109_val = 0; cc110_val = 0;  // Valeurs des 3 CC
+
 play_state = 0;
 track_id_found = -1;
 
@@ -262,6 +267,22 @@ while (
             temp_block_length = msg3 * 128;
         ) : (msg2 == 20) ? (
             temp_block_length += msg3;
+        ) : (msg2 == 108) ? (
+            // CC108: Bits 0-6 de item_start_sixteenths
+            cc108_val = msg3;
+            printf("DEBUG: CC108 received: %d\n", msg3);
+        ) : (msg2 == 109) ? (
+            // CC109: Bits 7-13 de item_start_sixteenths  
+            cc109_val = msg3;
+            printf("DEBUG: CC109 received: %d\n", msg3);
+        ) : (msg2 == 110) ? (
+            // CC110: Bits 14-20 de item_start_sixteenths
+            cc110_val = msg3;
+            // Reconstruire item_start_sixteenths quand on a reçu le dernier CC
+            item_start_sixteenths = cc108_val + (cc109_val << 7) + (cc110_val << 14);
+            item_start_beats = item_start_sixteenths / 16.0;
+            sprintf(current_display, "Item start: %.3f beats", item_start_beats);
+            printf("DEBUG: CC110 received: %d -> Item start: %.3f beats (%d/16)\n", msg3, item_start_beats, item_start_sixteenths);
         );
       );
     );
@@ -300,10 +321,27 @@ while (
             // En mode PLAYBACK, on lit la loop RECORD si elle existe
             (note_length[idx] > 0) ? (
               is_playing[idx] = 1;
-              read_pos[idx] = 0;
+              
+              // Calculer l'offset basé sur beat_position et item_start_beats
+              (item_start_beats > 0 && note_length[idx] > 0) ? (
+                offset_beats = beat_position - item_start_beats;
+                (offset_beats > 0) ? (
+                  loop_length_sec = note_length[idx] / srate;
+                  loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
+                  actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  actual_offset_sec = actual_offset_beats * (60.0 / tempo);
+                  read_pos[idx] = actual_offset_sec * srate;
+                ) : (
+                  read_pos[idx] = 0;
+                );
+                printf("DEBUG: RECORD offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+              ) : (
+                read_pos[idx] = 0;
+              );
+              
               is_recording[idx] = 0;
               loop_type[idx] = 0; // Garder le type RECORD
-              sprintf(current_display, "Playback: playing RECORD note=%d", note);
+              sprintf(current_display, "RECORD: beat=%.2f offset=%.2fb", beat_position, offset_beats);
             ) : (
               sprintf(current_display, "Playback: no content for RECORD note=%d", note);
             );
@@ -315,15 +353,43 @@ while (
           );
         )
         : (vel == 2) ? ( // PLAY
-          (note_length[idx] > 0) ? (
-            is_playing[idx] = 1;
-            
-            // Ne plus appliquer l'offset ici, juste commencer au début
-            read_pos[idx] = 0;
-            
-            is_recording[idx] = 0;
-            loop_type[idx] = 1;
-          ) : sprintf(current_display, "No sample for %d", note)
+          (playback_mode == 1) ? (
+            // En mode PLAYBACK, on lit la loop PLAY si elle existe
+            (note_length[idx] > 0) ? (
+              is_playing[idx] = 1;
+              
+              // Calculer l'offset basé sur beat_position et item_start_beats
+              (item_start_beats > 0 && note_length[idx] > 0) ? (
+                offset_beats = beat_position - item_start_beats;
+                (offset_beats > 0) ? (
+                  loop_length_sec = note_length[idx] / srate;
+                  loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
+                  actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  actual_offset_sec = actual_offset_beats * (60.0 / tempo);
+                  read_pos[idx] = actual_offset_sec * srate;
+                ) : (
+                  read_pos[idx] = 0;
+                );
+                printf("DEBUG: PLAY offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+              ) : (
+                read_pos[idx] = 0;
+              );
+              
+              is_recording[idx] = 0;
+              loop_type[idx] = 1;
+              sprintf(current_display, "PLAY: beat=%.2f offset=%.2fb", beat_position, offset_beats);
+            ) : (
+              sprintf(current_display, "Playback: no content for PLAY note=%d", note);
+            );
+          ) : (
+            // En mode LIVE, comportement normal
+            (note_length[idx] > 0) ? (
+              is_playing[idx] = 1;
+              read_pos[idx] = 0;  // Commencer au début en mode LIVE
+              is_recording[idx] = 0;
+              loop_type[idx] = 1;
+            ) : sprintf(current_display, "No sample for %d", note);
+          )
         )
         : (vel == 3) ? ( // OVERDUB
           (playback_mode == 1) ? (
@@ -331,11 +397,26 @@ while (
             (note_length[idx] > 0) ? (
               is_playing[idx] = 1;
               
-              // Ne plus appliquer l'offset ici non plus
-              read_pos[idx] = 0;
+              // Calculer l'offset basé sur beat_position et item_start_beats
+              (item_start_beats > 0 && note_length[idx] > 0) ? (
+                offset_beats = beat_position - item_start_beats;
+                (offset_beats > 0) ? (
+                  loop_length_sec = note_length[idx] / srate;
+                  loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
+                  actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  actual_offset_sec = actual_offset_beats * (60.0 / tempo);
+                  read_pos[idx] = actual_offset_sec * srate;
+                ) : (
+                  read_pos[idx] = 0;
+                );
+                printf("DEBUG: OVERDUB offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+              ) : (
+                read_pos[idx] = 0;
+              );
               
               is_recording[idx] = playback_mode == 0;
               loop_type[idx] = 2;
+              sprintf(current_display, "OVERDUB: beat=%.2f offset=%.2fb", beat_position, offset_beats);
             ) : (
               sprintf(current_display, "Playback: no content for OVERDUB note=%d", note);
             );
@@ -358,9 +439,27 @@ while (
             // En mode PLAYBACK, on lit la loop MONITOR si elle existe
             (note_length[idx] > 0) ? (
               is_playing[idx] = 1;
-              read_pos[idx] = 0;
+              
+              // Calculer l'offset basé sur beat_position et item_start_beats
+              (item_start_beats > 0 && note_length[idx] > 0) ? (
+                offset_beats = beat_position - item_start_beats;
+                (offset_beats > 0) ? (
+                  loop_length_sec = note_length[idx] / srate;
+                  loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
+                  actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
+                  actual_offset_sec = actual_offset_beats * (60.0 / tempo);
+                  read_pos[idx] = actual_offset_sec * srate;
+                ) : (
+                  read_pos[idx] = 0;
+                );
+                printf("DEBUG: MONITOR offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+              ) : (
+                read_pos[idx] = 0;
+              );
+              
               is_recording[idx] = 0; // Pas d'enregistrement en mode PLAYBACK
               loop_type[idx] = 3; // Garder le type MONITOR
+              sprintf(current_display, "MONITOR: beat=%.2f offset=%.2fb", beat_position, offset_beats);
             );
           ) : (
             // En mode LIVE, comportement normal
@@ -454,15 +553,18 @@ loop(num_active_notes,
   (loop_type[n] != -1) ? (  // Boucle active
     any_loop_active = 1;
     curLen = note_length[n];
+    monitor_length = 0;
     unitCount = units_count[n];
     capacity = unitCount * UNIT_SIZE;
     
     // Incrémenter read_pos pour la lecture, l'enregistrement et les blocs MONITOR
     ((is_playing[n] || is_recording[n] || loop_type[n] == 3) && (curLen > 0 || is_recording[n] || loop_type[n] == 3)) ? (
       read_pos[n] += 1;
-      // Pour les blocs MONITOR, on boucle sur temp_block_length
-      (loop_type[n] == 3 && temp_block_length > 0) ? (
-        (read_pos[n] >= temp_block_length * srate / 10) ? read_pos[n] = 0;
+      // Gestion spécifique du bouclage selon le type de bloc
+      (loop_type[n] == 3) ? (
+        // Pour les blocs MONITOR, utiliser temp_block_length ou curLen selon la validité
+        monitor_length = (temp_block_length > 0) ? (temp_block_length * srate / 10) : curLen;
+        (read_pos[n] >= monitor_length && !is_recording[n]) ? read_pos[n] = 0;
       ) : (
         // Pour les autres blocs, on boucle sur note_length
         (read_pos[n] >= curLen && !is_recording[n]) ? read_pos[n] = 0;
@@ -584,4 +686,34 @@ loop(num_active_notes,
 
 )
 
+@gfx 640 480
+
+// Configurer une police plus grande
+gfx_setfont(1, "Arial", 25);  // Police Arial, taille 16
+
+gfx_r = gfx_g = gfx_b = 1;
+gfx_x = 10; gfx_y = 10;
+
+// Affichage de beat_position en gros (toujours visible)
+gfx_setfont(2, "Arial", 30, 'B');
+gfx_r = 0; gfx_g = 1; gfx_b = 0;  // Vert vif
+gfx_printf("BEAT: %.3f", beat_position);
+gfx_x = 10; gfx_y += 35;
+
+// Revenir à la police normale pour le reste
+gfx_setfont(1, "Arial", 25);
+gfx_r = gfx_g = gfx_b = 1;  // Blanc
+gfx_printf("Item Start (beats): %.3f", item_start_beats);
+gfx_x = 10; gfx_y += 25;
+gfx_printf("Item Start (sixteenths): %d", item_start_sixteenths);
+gfx_x = 10; gfx_y += 25;
+gfx_printf("CC108: %d, CC109: %d, CC110: %d", cc108_val, cc109_val, cc110_val);
+gfx_x = 10; gfx_y += 25;
+
+// Affichage du mode
+gfx_printf("Mode: %s", playback_mode == 1 ? "PLAYBACK" : "LIVE");
+gfx_x = 10; gfx_y += 25;
+
+// Affichage du status actuel  
+gfx_printf("Display: %s", current_display);
 

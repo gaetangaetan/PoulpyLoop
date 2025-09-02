@@ -304,173 +304,7 @@ local function setLoopsMonoStereo(isMono)
     reaper.UpdateArrange()
 end
 
---------------------------------------------------------------------------------
--- Fonctions de traitement MIDI
---------------------------------------------------------------------------------
-local function ProcessMIDINotes(track, return_data)
-    local noteCounters = {}
-    local recordLoopPitches = {}
-    local allTakes = {}
 
-    -- Récupérer tous les items MIDI d'une piste ou de toutes les pistes
-    local num_tracks = reaper.CountTracks(0)
-    for t = 0, num_tracks - 1 do
-        local current_track = reaper.GetTrack(0, t)
-        -- Si un filtre de piste est spécifié, ignorer les autres pistes
-        if not track or current_track == track then
-            local item_count = reaper.CountTrackMediaItems(current_track)
-            for i = 0, item_count - 1 do
-                local item = reaper.GetTrackMediaItem(current_track, i)
-                if item then
-                    for j = 0, reaper.CountTakes(item) - 1 do
-                        local take = reaper.GetTake(item, j)
-                        if take and reaper.TakeIsMIDI(take) then
-                            local loop_type = GetTakeMetadata(take, "loop_type")
-                            if loop_type then
-                                table.insert(allTakes, {
-                                    take = take,
-                                    item = item,
-                                    start_time = reaper.GetMediaItemInfo_Value(item, "D_POSITION"),
-                                    loop_type = loop_type,
-                                    track = current_track
-                                })
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Tri par piste/position temporelle
-    table.sort(allTakes, function(a, b)
-        local trackA_id = reaper.GetMediaTrackInfo_Value(a.track, "IP_TRACKNUMBER")
-        local trackB_id = reaper.GetMediaTrackInfo_Value(b.track, "IP_TRACKNUMBER")
-        if trackA_id == trackB_id then
-            return a.start_time < b.start_time
-        else
-            return trackA_id < trackB_id
-        end
-    end)
-
-    -- Traitement des items
-    for _, entry in ipairs(allTakes) do
-        local take = entry.take
-        local item = entry.item
-        local loop_type = entry.loop_type
-        local track_id = reaper.GetMediaTrackInfo_Value(entry.track, "IP_TRACKNUMBER")
-        
-        if not noteCounters[track_id] then
-            noteCounters[track_id] = 1  -- Démarrer à 1
-            recordLoopPitches[track_id] = {}
-        end
-
-        if loop_type == "UNUSED" then goto continue end
-
-        reaper.MIDI_SetAllEvts(take, "")
-        local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-        local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-        local item_end = item_start + item_length
-        local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
-        local end_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_end)
-
-        if loop_type == "RECORD" then
-            local pitch = noteCounters[track_id]
-            noteCounters[track_id] = noteCounters[track_id] + 1
-            local loop_name = GetTakeMetadata(take, "loop_name") or ""
-            recordLoopPitches[track_id][loop_name] = pitch
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 1, false)
-        
-        elseif loop_type == "PLAY" then
-            local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-            local ref_name = reference_loop:match("%d%d%s+(.*)")
-            local refNote = 0
-            
-            if recordLoopPitches[track_id][reference_loop] then
-                refNote = recordLoopPitches[track_id][reference_loop]
-            elseif ref_name and recordLoopPitches[track_id][ref_name] then
-                refNote = recordLoopPitches[track_id][ref_name]
-            else
-                for name, pitch in pairs(recordLoopPitches[track_id]) do
-                    local name_without_prefix = name:match("%d%d%s+(.*)")
-                    if name_without_prefix and name_without_prefix == ref_name then
-                        refNote = pitch
-                        break
-                    end
-                end
-            end
-            
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 2, false)
-        
-        elseif loop_type == "OVERDUB" then
-            -- Même logique que pour PLAY
-            local reference_loop = GetTakeMetadata(take, "reference_loop") or ""
-            local ref_name = reference_loop:match("%d%d%s+(.*)")
-            local refNote = 0
-            
-            if recordLoopPitches[track_id][reference_loop] then
-                refNote = recordLoopPitches[track_id][reference_loop]
-            elseif ref_name and recordLoopPitches[track_id][ref_name] then
-                refNote = recordLoopPitches[track_id][ref_name]
-            else
-                for name, pitch in pairs(recordLoopPitches[track_id]) do
-                    local name_without_prefix = name:match("%d%d%s+(.*)")
-                    if name_without_prefix and name_without_prefix == ref_name then
-                        refNote = pitch
-                        break
-                    end
-                end
-            end
-            
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, refNote, 3, false)
-        
-        elseif loop_type == "MONITOR" then
-            local pitch = noteCounters[track_id]
-            noteCounters[track_id] = noteCounters[track_id] + 1
-            reaper.MIDI_InsertNote(take, false, false, start_ppq, end_ppq, 0, pitch, 4, false)
-        end
-
-        -- Insertion des CC MIDI pour les paramètres de modulation
-        if loop_type ~= "UNUSED" then
-            local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
-            local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
-            local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
-            local cc08 = (is_mono_str == "true") and 0 or 1
-            local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
-            local cc10 = math.floor(64 + pan_val * 63 + 0.5)
-            local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
-            local cc09 = math.floor(64 + pitch_val + 0.5)
-            local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
-            
-            -- Ajouter les CC pour la durée du bloc si c'est un bloc RECORD ou MONITOR
-            if loop_type == "RECORD" or loop_type == "MONITOR" then
-                local block_length = math.floor(item_length * 10) -- Convertir en dixièmes de secondes
-                local cc19_val = math.floor(block_length / 128)
-                local cc20_val = block_length % 128
-                reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 19, cc19_val, false)
-                reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 20, cc20_val, false)
-            end
-            
-            reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 8, cc08, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 10, cc10, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 9, cc09, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 11, monitoring_val, false)
-            
-
-        end
-
-        reaper.MIDI_Sort(take)
-        ::continue::
-    end
-
-    if return_data then
-        return {
-            noteCounters = noteCounters,
-            recordLoopPitches = recordLoopPitches
-        }
-    end
-end
 
 --------------------------------------------------------------------------------
 -- Fonctions de mise à jour des données
@@ -503,12 +337,12 @@ local function UpdateTakeData(take)
             if v == lt then
                 selected_loop_type_index = i - 1
                 break
-            end
-        end
+                            end
+                        end
         
         monitoring = tonumber(GetTakeMetadata(take, "monitoring")) or (lt == "PLAY" and 0 or 1)
-    end
-end
+                    end
+                end
 
 --------------------------------------------------------------------------------
 -- Fonctions d'initialisation et d'interface
@@ -527,12 +361,41 @@ local function destroyContext()
     if ctx then
         reaper.ImGui_DestroyContext(ctx)
         ctx = nil
+        end
     end
-end
 
 --------------------------------------------------------------------------------
 -- Fonctions d'automation de pitch
 --------------------------------------------------------------------------------
+
+-- Fonctions pour sauvegarder/restaurer les préférences d'automation par piste
+local function SaveAutomationPrefs(track, fx_index, param_index)
+    if not track then return end
+    
+    local track_guid = reaper.GetTrackGUID(track)
+    if track_guid then
+        local guid_str = reaper.guidToString(track_guid, "")
+        reaper.SetProjExtState(0, "PoulpyLoopy_AutomationPrefs", "fx_" .. guid_str, tostring(fx_index))
+        reaper.SetProjExtState(0, "PoulpyLoopy_AutomationPrefs", "param_" .. guid_str, tostring(param_index))
+    end
+end
+
+local function LoadAutomationPrefs(track)
+    if not track then return nil, nil end
+    
+    local track_guid = reaper.GetTrackGUID(track)
+    if track_guid then
+        local guid_str = reaper.guidToString(track_guid, "")
+        local _, fx_str = reaper.GetProjExtState(0, "PoulpyLoopy_AutomationPrefs", "fx_" .. guid_str)
+        local _, param_str = reaper.GetProjExtState(0, "PoulpyLoopy_AutomationPrefs", "param_" .. guid_str)
+        
+        if fx_str ~= "" and param_str ~= "" then
+            return tonumber(fx_str), tonumber(param_str)
+        end
+    end
+    
+    return nil, nil
+end
 
 -- Fonction pour rafraîchir la liste des FX
 function RefreshFXList()
@@ -548,8 +411,23 @@ function RefreshFXList()
             fx_list[i] = {index = i, name = fx_name}
         end
     end
-end
-
+    
+    -- Restaurer les préférences sauvegardées pour cette piste
+    local saved_fx, saved_param = LoadAutomationPrefs(automation_track)
+    if saved_fx and fx_list[saved_fx] then
+        selected_fx_index = saved_fx
+        RefreshParamList(saved_fx)
+        if saved_param and param_list[saved_param] then
+            selected_param_index = saved_param
+        else
+            selected_param_index = 0
+        end
+    else
+        selected_fx_index = 0
+        selected_param_index = 0
+                end
+            end
+            
 -- Fonction pour rafraîchir la liste des paramètres d'un FX
 function RefreshParamList(fx_index)
     param_list = {}
@@ -561,10 +439,10 @@ function RefreshParamList(fx_index)
         local retval, param_name = reaper.TrackFX_GetParamName(automation_track, fx_index, i, "")
         if retval then
             param_list[i] = {index = i, name = param_name}
-        end
-    end
-end
-
+                    end
+                end
+            end
+            
 -- Fonction pour générer l'automation de pitch
 function GeneratePitchAutomation(fx_index, param_index, sensitivity)
     if not automation_track then return false end
@@ -589,7 +467,7 @@ function GeneratePitchAutomation(fx_index, param_index, sensitivity)
             if loop_type and loop_type ~= "UNUSED" then
                 local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
                 local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
-                local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
+            local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
                 
                 table.insert(project_blocks, {
                     start_time = item_start,
@@ -670,6 +548,8 @@ function DrawAutomationDialog()
                     selected_fx_index = i
                     RefreshParamList(i)
                     selected_param_index = 0
+                    -- Sauvegarder immédiatement le changement d'effet
+                    SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
                 end
             end
             reaper.ImGui_EndCombo(ctx)
@@ -681,6 +561,8 @@ function DrawAutomationDialog()
             for i, param in pairs(param_list) do
                 if reaper.ImGui_Selectable(ctx, param.name, i == selected_param_index) then
                     selected_param_index = i
+                    -- Sauvegarder immédiatement le changement de paramètre
+                    SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
                 end
             end
             reaper.ImGui_EndCombo(ctx)
@@ -706,6 +588,8 @@ function DrawAutomationDialog()
             if fx_list[selected_fx_index] and param_list[selected_param_index] then
                 local success = GeneratePitchAutomation(selected_fx_index, selected_param_index, pitch_sensitivity)
                 if success then
+                    -- Sauvegarder les préférences pour cette piste
+                    SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
                     reaper.ShowMessageBox("Automation generated successfully!", "Pitch Automation", 0)
                     show_automation_dialog = false
                 else
@@ -713,9 +597,9 @@ function DrawAutomationDialog()
                 end
             else
                 reaper.ShowMessageBox("Please select both an FX and a parameter.", "Error", 0)
-            end
-        end
-        
+    end
+end
+
         reaper.ImGui_SameLine(ctx)
         if reaper.ImGui_Button(ctx, "Cancel") then
             show_automation_dialog = false
@@ -797,6 +681,24 @@ local function DrawLoopEditor()
             reaper.ImGui_Text(ctx, string.format("MIDI note : %d (Velocity: %d)", current_midi_note, current_midi_velocity))
         else
             reaper.ImGui_Text(ctx, "No MIDI note found")
+        end
+        
+        -- DEBUG: Infos de position (temporaire pour debug)
+        if item then
+            local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            local tempo = reaper.Master_GetTempo()
+            local item_start_beats = reaper.TimeMap2_timeToBeats(0, item_start, nil, nil, nil, nil)
+            local item_start_sixteenths = math.floor(item_start_beats * 16)
+            local cc108 = item_start_sixteenths & 0x7F
+            local cc109 = (item_start_sixteenths >> 7) & 0x7F
+            local cc110 = (item_start_sixteenths >> 14) & 0x7F
+            
+            reaper.ImGui_Separator(ctx)
+            reaper.ImGui_Text(ctx, "DEBUG - Position encoding:")
+            reaper.ImGui_Text(ctx, string.format("Item start: %.3fs (%.3f beats)", item_start, item_start_beats))
+            reaper.ImGui_Text(ctx, string.format("Sixteenths: %d", item_start_sixteenths))
+            reaper.ImGui_Text(ctx, string.format("CC108=%d, CC109=%d, CC110=%d", cc108, cc109, cc110))
+            reaper.ImGui_Separator(ctx)
         end
         
         reaper.ImGui_Separator(ctx)
@@ -1508,12 +1410,12 @@ local function UpdateBlock(take)
     end
     
     -- Récupérer directement les métadonnées sans passer par les variables globales
-    local loop_type = GetTakeMetadata(take, "loop_type")
+        local loop_type = GetTakeMetadata(take, "loop_type")
     if not loop_type or loop_type == "" then
         return
     end
     
-    local track = reaper.GetMediaItemTake_Track(take)
+                local track = reaper.GetMediaItemTake_Track(take)
     if not track then
         return
     end
@@ -1554,13 +1456,13 @@ local function UpdateAllBlocks()
             for i = 0, item_count - 1 do
                 local item = reaper.GetTrackMediaItem(track, i)
                 if item then
-                    local take = reaper.GetActiveTake(item)
-                    if take and reaper.TakeIsMIDI(take) and GetTakeMetadata(take, "loop_type") then
-                        table.insert(blocks_to_process, {
-                            take = take,
-                            item = item,
-                            track = track
-                        })
+                local take = reaper.GetActiveTake(item)
+                if take and reaper.TakeIsMIDI(take) and GetTakeMetadata(take, "loop_type") then
+                    table.insert(blocks_to_process, {
+                        take = take,
+                        item = item,
+                        track = track
+                    })
                     end
                 end
             end
@@ -1592,7 +1494,7 @@ local function UpdateAllBlocks()
         -- Traiter le bloc actuel
         local block = blocks_to_process[processed_blocks + 1]
         if block and block.take then
-            UpdateBlock(block.take)
+        UpdateBlock(block.take)
         end
         
         -- Mettre à jour le compteur et le message

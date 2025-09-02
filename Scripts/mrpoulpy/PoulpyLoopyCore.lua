@@ -330,10 +330,44 @@ local function UnfoldPlayLoop(take)
     reaper.UpdateArrange()
 end
 
+-- Fonction pour encoder la position de début d'item en CC108-110 (en beats/16)
+local function WriteItemStartCCs(take, item_start_sec)
+    -- Convertir la position de secondes vers beats (en tenant compte des changements de tempo)
+    local item_start_beats = reaper.TimeMap2_timeToBeats(0, item_start_sec, nil, nil, nil, nil)
+    
+    -- Encoder en 1/16 beats (résolution fine)
+    local item_start_sixteenths = math.floor(item_start_beats * 16)
+    
+    -- Encoder sur 21 bits avec 3 CC (CC108, CC109, CC110)
+    local values = {
+        item_start_sixteenths & 0x7F,           -- CC108: bits 0-6
+        (item_start_sixteenths >> 7) & 0x7F,    -- CC109: bits 7-13  
+        (item_start_sixteenths >> 14) & 0x7F,   -- CC110: bits 14-20
+    }
+    
+    reaper.ShowConsoleMsg(string.format("DEBUG: item_start=%.3fs, beats=%.3f, sixteenths=%d\n", 
+        item_start_sec, item_start_beats, item_start_sixteenths))
+    reaper.ShowConsoleMsg(string.format("DEBUG: CC108=%d, CC109=%d, CC110=%d\n", 
+        values[1], values[2], values[3]))
+    
+    -- Insérer les CC au tout début (PPQ = 0)
+    for i, v in ipairs(values) do
+        reaper.MIDI_InsertCC(take, false, false, 0, 0xB0, 0, 107 + i, v, false)  -- CC108-110
+        reaper.ShowConsoleMsg(string.format("DEBUG: Inséré CC%d = %d\n", 107 + i, v))
+    end
+end
+
 --------------------------------------------------------------------------------
 -- Fonctions de gestion des notes MIDI
 --------------------------------------------------------------------------------
 local function ProcessMIDINotes(track_filter, return_data)
+    -- DEBUG: Message au tout début
+    reaper.ShowConsoleMsg("=== DEBUG: ProcessMIDINotes APPELÉE ===\n")
+    -- Test simple de la console
+    reaper.ShowConsoleMsg("TEST CONSOLE: Si vous voyez ce message, la console fonctionne!\n")
+    -- NOUVEAU TEST CRITIQUE
+    reaper.ShowConsoleMsg("***** TEST CRITIQUE: ProcessMIDINotes est vraiment appelé! *****\n")
+    
     local noteCounters = {}         -- par piste (clé = track_id)
     local recordLoopPitches = {}    -- par piste: mapping { loop_name -> pitch }
     local allTakes = {}
@@ -386,7 +420,14 @@ local function ProcessMIDINotes(track_filter, return_data)
         if loop_type == "UNUSED" then goto continue end
 
         reaper.MIDI_SetAllEvts(take, "")
+        
+        -- Écrire les CC de position de début d'item au tout début
         local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+        reaper.ShowConsoleMsg(string.format("DEBUG: Écriture CC108-110 pour item_start=%.3fs\n", item_start))
+        reaper.ShowConsoleMsg("***** AVANT APPEL WriteItemStartCCs *****\n")
+        WriteItemStartCCs(take, item_start)
+        reaper.ShowConsoleMsg("***** APRÈS APPEL WriteItemStartCCs *****\n")
+        
         local item_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
         local item_end = item_start + item_length
         local start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, item_start)
@@ -469,6 +510,10 @@ local function ProcessMIDINotes(track_filter, return_data)
             reaper.MIDI_InsertCC(take, false, false, start_ppq + 3, 0xB0, 0, 9, cc09, false)
             local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
             reaper.MIDI_InsertCC(take, false, false, start_ppq + 4, 0xB0, 0, 11, monitoring_val, false)
+            
+            -- Les CC108-110 sont déjà écrits au début par WriteItemStartCCs
+            local playback_mode = (reaper.gmem_read(GMEM.PLAYBACK_MODE) == 1)
+            reaper.ShowConsoleMsg(string.format("DEBUG: Mode actuel = %s\n", playback_mode and "PLAYBACK" or "LIVE"))
         end
 
         reaper.MIDI_Sort(take)
@@ -545,6 +590,10 @@ local function ApplyMIDIChanges(take, item, midi_data)
     
     -- Effacer les événements MIDI existants
     reaper.MIDI_SetAllEvts(take, "")
+    
+    -- Écrire les CC de position de début d'item au tout début
+    local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    WriteItemStartCCs(take, item_start)
     
     -- Calcul des temps en PPQ
     local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
