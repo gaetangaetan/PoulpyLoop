@@ -518,15 +518,18 @@ while (
               sprintf(current_display, "MONITOR: beat=%.2f offset=%.2fb", beat_position, offset_beats);
             );
           ) : (
-            // En mode LIVE, comportement normal
-            is_playing[idx] = 1;
-            loop_type[idx] = 3;
-            
-            // Vérifier si on doit enregistrer les loops MONITOR
+            // En mode LIVE, traitement IDENTIQUE aux blocs RECORD
             record_monitor_mode = get_record_monitor_loops_mode();
             (record_monitor_mode == 1) ? (
-              // Si le mode est activé, on enregistre comme pour RECORD
+              // Mode ON : traitement IDENTIQUE à un bloc RECORD
               startRecording(idx, mode);
+              loop_type[idx] = 3;
+              sprintf(current_display, "Rec MONITOR note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+            ) : (
+              // Mode OFF : juste monitoring, pas d'enregistrement
+              is_playing[idx] = 1;
+              loop_type[idx] = 3;
+              sprintf(current_display, "Monitor only note=%d", note);
             );
           );
         )
@@ -640,21 +643,26 @@ loop(num_active_notes,
         );
       );
       
-      (rec_mode[n] == 0) ? ( // MONO
-        sampleMono = the_memory[note_start[n] + effective_pos];
-        playL += sampleMono * volumeFactor * gainL * fade_gain;
-        playR += sampleMono * volumeFactor * gainR * fade_gain;
-      ) : ( // STEREO
-        baseOfs = note_start[n] + 2*effective_pos;
-        sampleL = the_memory[baseOfs];
-        sampleR = the_memory[baseOfs+1];
-        playL += sampleL * volumeFactor * gainL * fade_gain;
-        playR += sampleR * volumeFactor * gainR * fade_gain;
+      // Vérifier que effective_pos est dans les bornes du sample
+      (effective_pos < curLen) ? (
+        (rec_mode[n] == 0) ? ( // MONO
+          sampleMono = the_memory[note_start[n] + effective_pos];
+          playL += sampleMono * volumeFactor * gainL * fade_gain;
+          playR += sampleMono * volumeFactor * gainR * fade_gain;
+        ) : ( // STEREO
+          baseOfs = note_start[n] + 2*effective_pos;
+          sampleL = the_memory[baseOfs];
+          sampleR = the_memory[baseOfs+1];
+          playL += sampleL * volumeFactor * gainL * fade_gain;
+          playR += sampleR * volumeFactor * gainR * fade_gain;
+        );
       );
     );
 
+
+    
     // Gérer l'enregistrement après la lecture (uniquement en mode LIVE)
-    (playback_mode == 0 && (loop_type[n] == 0 || loop_type[n] == 2 || (loop_type[n] == 3 && get_record_monitor_loops_mode() == 1))) ? (
+    (playback_mode == 0 && (loop_type[n] == 0 || loop_type[n] == 2 || (loop_type[n] == 3 && is_recording[n]))) ? (
       // Appliquer volume/pan/mode *COURANTS* avant l'enregistrement
       (mode == 0) ? ( // Mono
         recL = inL * gainL;  // Enlever volumeFactor ici
@@ -677,7 +685,9 @@ loop(num_active_notes,
 
         // Correction : forcer note_length[n]=1 dès le premier sample
         note_length[n] = (curLen == 0) ? 1 : curLen + 1;
-        (curLen + 1 >= capacity) ? (expandRecording(n));
+        (curLen + 1 >= capacity) ? (
+          expandRecording(n);
+        );
       ) : (  // OVERDUB - ici on ADDITIONNE au lieu de remplacer
         (curLen > 0) ? (  // Seulement si on a déjà du contenu
           (rec_mode[n] == 0) ? ( // Mono
@@ -755,18 +765,33 @@ gfx_r = gfx_g = gfx_b = 1;  // Blanc
 gfx_printf("Item Start (beats): %.3f", item_start_beats);
 gfx_x = 10; gfx_y += 25;
 gfx_printf("Item Start (sixteenths): %d", item_start_sixteenths);
-gfx_x = 10; gfx_y += 25;
-gfx_printf("CC108: %d, CC109: %d, CC110: %d", cc108_val, cc109_val, cc110_val);
-gfx_x = 10; gfx_y += 25;
+
+//gfx_x = 10; gfx_y += 25;
+//gfx_printf("CC108: %d, CC109: %d, CC110: %d", cc108_val, cc109_val, cc110_val);
+//gfx_x = 10; gfx_y += 25;
 
 // Affichage du mode
-gfx_printf("Mode: %s", playback_mode == 1 ? "PLAYBACK" : "LIVE");
-gfx_x = 10; gfx_y += 25;
+//gfx_printf("Mode: %s", playback_mode == 1 ? "PLAYBACK" : "LIVE");
+//gfx_x = 10; gfx_y += 25;
 
 // Affichage du dernier reset (permanent)
-gfx_r = 1; gfx_g = 0.5; gfx_b = 0;  // Orange pour le debug
-gfx_printf("Dernier reset: %d (Instance: %d)", last_reset_number, instance_id);
+//gfx_r = 1; gfx_g = 0.5; gfx_b = 0;  // Orange pour le debug
+//gfx_printf("Dernier reset: %d (Instance: %d)", last_reset_number, instance_id);
+
 gfx_x = 10; gfx_y += 25;
+gfx_printf("curLen: %d", curLen);
+
+gfx_x = 10; gfx_y += 25;
+// Debug: Affichage des variables d'allocation mémoire
+gfx_printf("next_free_unit: %d", next_free_unit[0]);
+gfx_x = 10; gfx_y += 25;
+
+// Debug pour la note active (supposons que c'est la note 60)
+(num_active_notes > 0) ? (
+  debug_note = active_notes[0];
+  gfx_printf("Note %d: start=%d, length=%d, units=%d", debug_note, note_start[debug_note], note_length[debug_note], units_count[debug_note]);
+  gfx_x = 10; gfx_y += 25;
+);
 
 // Affichage du status actuel  
 gfx_r = gfx_g = gfx_b = 1;  // Retour au blanc
