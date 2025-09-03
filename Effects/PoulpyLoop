@@ -15,7 +15,6 @@ slider3:0<0,1,1{OFF,ON}>Monitoring à l'arrêt
 @init
 
 ext_noinit = 1;
-
 NUM_NOTES = 128;
 UNIT_SIZE = 4096 * 64;
 max_units = 32000000 / UNIT_SIZE;
@@ -67,7 +66,6 @@ strcpy(time_left_str, "Loading...");
 
 volumeFactor = 1.0;
 panFactor    = 0.5;
-mode = 0;
 monitoring = 1; // Par défaut, le monitoring est activé (ON)
 
 last_loop_type = -2;
@@ -78,6 +76,17 @@ last_monitoring = -1;
 
 // Variable pour stocker le dernier pitch
 last_pitch = 0.5; // Valeur par défaut (milieu)
+
+// Variable temporaire pour stocker le mode mono/stéréo courant
+current_mode = 0; // Par défaut mono
+
+// Variables de debug persistantes
+debug_cc29_received = -1; // -1 = pas reçu, 0/1 = valeur reçue
+debug_note_mode = -1;     // Mode utilisé lors du startRecording
+
+// String pour accumler les logs de debug
+debug_log = 0;
+strcpy(#debug_log, "");
 
 // Variables pour la position de début du bloc (mode PLAYBACK via CC108-110) 
 item_start_sixteenths = 0;  // Position de début en 1/16 beats  
@@ -101,6 +110,9 @@ GMEM_MONITORING_STOP_BASE = 195;  // gmem[195] à gmem[195+64-1] pour le monitor
 GMEM_NOTE_START_POS_BASE = 259;  // gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
 GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
 GMEM_RESET_PLUGINS_BASE = 16200; // gmem[16200] à gmem[16200+64-1] pour les signaux de reset des plugins (64 instances max)
+
+
+
 
 // Chercher un ID unique pour cette instance
 function get_unique_instance_id()
@@ -175,27 +187,40 @@ function getNoteIndex(note)
   (note >= 0 && note < 128) ? note : -1;
 );
 
-function startRecording(note, mode)
+function startRecording(note, note_mode)
 (
   // En mode PLAYBACK, on n'enregistre pas
   (get_playback_mode() == 1) ? (
     sprintf(current_display, "PLAYBACK mode : recording disabled");
     0; // Ne rien faire
   ) : (
+    // DEBUG: Logger le début de l'allocation
+    sprintf(#temp_str, "START_REC N%d %s\n", note, note_mode ? "ST" : "MO");
+    strcat(#debug_log, #temp_str);
+    
     note_length[note] = 0;
     units_count[note] = 1;
     is_recording[note] = 1;
     is_playing[note] = 0;
     read_pos[note] = 0;
-    rec_mode[note] = mode;
+    rec_mode[note] = note_mode;
     nu = next_free_unit[0];
     (nu >= max_units) ? (
       is_recording[note] = 0;
       note_start[note] = 0;
       strcpy(current_display, "Memo saturée: impossible rec");
+      sprintf(#temp_str, "ALLOC_FAILED N%d\n", note);
+      strcat(#debug_log, #temp_str);
     ) : (
       note_start[note] = nu * UNIT_SIZE;
-      next_free_unit[0] = nu + 1;
+      
+      // Calculer combien d'unités ce bloc va occuper
+      units_needed = note_mode ? 2 : 1;  // Stéréo = 2 unités, Mono = 1 unité
+      next_free_unit[0] = nu + units_needed;
+      
+      // DEBUG: Logger l'allocation réussie
+      sprintf(#temp_str, "ALLOC_OK N%d @%d units=%d\n", note, note_start[note], units_needed);
+      strcat(#debug_log, #temp_str);
     );
   );
 );
@@ -210,7 +235,9 @@ function expandRecording(note)
     curUnits = units_count[note];
     (nu < max_units) ? (
       units_count[note] = curUnits + 1;
-      next_free_unit[0] = nu + 1;
+      // Calculer combien d'unités supplémentaires sont nécessaires
+      units_needed = rec_mode[note] ? 2 : 1;
+      next_free_unit[0] = nu + units_needed;
     ) : (
       is_recording[note] = 0;
       strcpy(current_display, "Memo full en cours d'enregistrement");
@@ -252,6 +279,12 @@ reset_signal = gmem[GMEM_RESET_PLUGINS_BASE + instance_id];
   
   // Réinitialiser les variables temporaires
   temp_block_length = 0;
+  current_mode = 0; // Réinitialiser le mode à mono
+  debug_cc29_received = -1;
+  debug_note_mode = -1;
+  
+  // DEBUG: Réinitialiser le log de debug
+  strcpy(#debug_log, "=== RESET ===\n");
   
   // Stocker le numéro de reset et acquitter le signal
   last_reset_number = reset_signal;
@@ -297,14 +330,16 @@ while (
             slider2 = msg3 - 64;
         ) : (msg2 == 10) ? (
             panFactor = cc10ToPan(msg3);
-        ) : (msg2 == 8) ?(
-            mode = msg3;
         ) : (msg2 == 11) ? (
             monitoring = msg3 > 0 ? 1 : 0;
         ) : (msg2 == 19) ? (
             temp_block_length = msg3 * 128;
         ) : (msg2 == 20) ? (
             temp_block_length += msg3;
+        ) : (msg2 == 29) ? (
+            // CC29: Définit le mode mono/stéréo pour la prochaine note
+            current_mode = msg3;
+            debug_cc29_received = msg3;
         ) : (msg2 == 108) ? (
             // CC108: Bits 0-6 de item_start_sixteenths
             cc108_val = msg3;
@@ -391,9 +426,9 @@ while (
             );
           ) : (
             // En mode LIVE, comportement normal
-            startRecording(idx, mode);
+            debug_note_mode = current_mode;
+            startRecording(idx, current_mode);
             loop_type[idx] = 0;
-            sprintf(current_display, "Rec note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
           );
         )
         : (vel == 2) ? ( // PLAY
@@ -431,6 +466,10 @@ while (
           ) : (
             // En mode LIVE, comportement normal
             (note_length[idx] > 0) ? (
+              // DEBUG: Logger le début de lecture PLAY
+              sprintf(#temp_str, "START_PLAY N%d @%d len=%d\n", idx, note_start[idx], note_length[idx]);
+              strcat(#debug_log, #temp_str);
+              
               is_playing[idx] = 1;
               read_pos[idx] = 0;  // Commencer au début en mode LIVE
               is_recording[idx] = 0;
@@ -474,14 +513,14 @@ while (
             // En mode LIVE, comportement normal
             //Si la boucle n'existait pas, on démarre un enregistrement normal.
             (note_length[idx] == 0) ? (
-              startRecording(idx, mode);
+              startRecording(idx, current_mode);
             ) : (
               is_recording[idx] = 1;  // Activer l'enregistrement
               read_pos[idx] = 0;      // Réinitialisation de la position de lecture
             );
             loop_type[idx] = 2;
             is_playing[idx] = 1;      // Activer la lecture en mode OVERDUB
-            sprintf(current_display, "Overdub note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+            sprintf(current_display, "Overdub note=%d vel=%d mode=%s", note, vel, current_mode ? "Stereo" : "Mono");
           );
         )
         : (vel == 4) ? ( // MONITOR
@@ -522,9 +561,9 @@ while (
             record_monitor_mode = get_record_monitor_loops_mode();
             (record_monitor_mode == 1) ? (
               // Mode ON : traitement IDENTIQUE à un bloc RECORD
-              startRecording(idx, mode);
+              startRecording(idx, current_mode);
               loop_type[idx] = 3;
-              sprintf(current_display, "Rec MONITOR note=%d vel=%d mode=%s", note, vel, mode ? "Stereo" : "Mono");
+              sprintf(current_display, "Rec MONITOR note=%d vel=%d mode=%s", note, vel, current_mode ? "Stereo" : "Mono");
             ) : (
               // Mode OFF : juste monitoring, pas d'enregistrement
               is_playing[idx] = 1;
@@ -542,6 +581,13 @@ while (
         // Réinitialiser la position de début de la note
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
         gmem[note_pos_index] = -1;
+        
+        // DEBUG: Logger la fin de l'enregistrement
+        (is_recording[idx] || note_length[idx] > 0) ? (
+          end_pos = rec_mode[idx] ? note_start[idx] + 2*note_length[idx] : note_start[idx] + note_length[idx];
+          sprintf(#temp_str, "END_REC N%d @%d len=%d\n", idx, note_start[idx], note_length[idx]);
+          strcat(#debug_log, #temp_str);
+        );
         
         is_playing[idx] = 0;
         is_recording[idx] = 0;
@@ -651,6 +697,13 @@ loop(num_active_notes,
           playR += sampleMono * volumeFactor * gainR * fade_gain;
         ) : ( // STEREO
           baseOfs = note_start[n] + 2*effective_pos;
+          
+          // DEBUG: Détecter les dépassements potentiels
+          (effective_pos >= curLen) ? (
+            sprintf(#temp_str, "OVERFLOW N%d pos=%d baseOfs=%d\n", n, effective_pos, baseOfs);
+            strcat(#debug_log, #temp_str);
+          );
+          
           sampleL = the_memory[baseOfs];
           sampleR = the_memory[baseOfs+1];
           playL += sampleL * volumeFactor * gainL * fade_gain;
@@ -663,13 +716,13 @@ loop(num_active_notes,
     
     // Gérer l'enregistrement après la lecture (uniquement en mode LIVE)
     (playback_mode == 0 && (loop_type[n] == 0 || loop_type[n] == 2 || (loop_type[n] == 3 && is_recording[n]))) ? (
-      // Appliquer volume/pan/mode *COURANTS* avant l'enregistrement
-      (mode == 0) ? ( // Mono
-        recL = inL * gainL;  // Enlever volumeFactor ici
-        recR = inL * gainR;  // Même signal en mono, enlever volumeFactor ici
-      ) : ( // Stereo
-        recL = inL * gainL;  // Enlever volumeFactor ici
-        recR = inR * gainR;  // Enlever volumeFactor ici
+      // Appliquer volume/pan selon le mode de la note courante
+      (rec_mode[n] == 0) ? ( // Mono - lire uniquement l'entrée gauche
+        recL = inL * gainL;
+        recR = inL * gainR;  // Même signal en mono
+      ) : ( // Stereo - lire les deux entrées
+        recL = inL * gainL;
+        recR = inR * gainR;
       );
 
       // Position d'écriture - pour OVERDUB, utiliser le même loopPos que pour la lecture
@@ -717,10 +770,21 @@ loop(num_active_notes,
 // Monitoring avec pan sinusoïdal (uniquement si une boucle est active, qu'on n'est pas en mode PLAYBACK
 // ET que la lecture est active OU que le monitoring à l'arrêt n'est pas activé)
 (monitoring && any_loop_active && playback_mode == 0 && (play_state || !slider3)) ? (
-  (mode == 0) ? ( // Mono 
+  // Déterminer le mode de monitoring basé sur les notes actives
+  monitor_mode = 0; // Par défaut mono
+  i = 0;
+  loop(num_active_notes,
+    n = active_notes[i];
+    (loop_type[n] != -1) ? (
+      monitor_mode = rec_mode[n]; // Prendre le mode de la note active
+    );
+    i += 1;
+  );
+  
+  (monitor_mode == 0) ? ( // Mono - lire uniquement l'entrée gauche
     monL = inL * volumeFactor * gainL;
     monR = inL * volumeFactor * gainR;  // Même signal en mono
-  ) : ( // Stereo
+  ) : ( // Stereo - lire les deux entrées
     monL = inL * volumeFactor * gainL;
     monR = inR * volumeFactor * gainR;
   );
@@ -759,41 +823,31 @@ gfx_r = 0; gfx_g = 1; gfx_b = 0;  // Vert vif
 gfx_printf("BEAT: %.3f", beat_position);
 gfx_x = 10; gfx_y += 35;
 
-// Revenir à la police normale pour le reste
-gfx_setfont(1, "Arial", 25);
-gfx_r = gfx_g = gfx_b = 1;  // Blanc
-gfx_printf("Item Start (beats): %.3f", item_start_beats);
-gfx_x = 10; gfx_y += 25;
-gfx_printf("Item Start (sixteenths): %d", item_start_sixteenths);
+// Affichage du log de debug
+gfx_setfont(1, "Courier New", 18);  // Police agrandie de 150%
+gfx_r = 1; gfx_g = 1; gfx_b = 1;  // Blanc
+gfx_x = 10; gfx_y = 35;
 
-//gfx_x = 10; gfx_y += 25;
-//gfx_printf("CC108: %d, CC109: %d, CC110: %d", cc108_val, cc109_val, cc110_val);
-//gfx_x = 10; gfx_y += 25;
-
-// Affichage du mode
-//gfx_printf("Mode: %s", playback_mode == 1 ? "PLAYBACK" : "LIVE");
-//gfx_x = 10; gfx_y += 25;
-
-// Affichage du dernier reset (permanent)
-//gfx_r = 1; gfx_g = 0.5; gfx_b = 0;  // Orange pour le debug
-//gfx_printf("Dernier reset: %d (Instance: %d)", last_reset_number, instance_id);
-
-gfx_x = 10; gfx_y += 25;
-gfx_printf("curLen: %d", curLen);
-
-gfx_x = 10; gfx_y += 25;
-// Debug: Affichage des variables d'allocation mémoire
-gfx_printf("next_free_unit: %d", next_free_unit[0]);
-gfx_x = 10; gfx_y += 25;
-
-// Debug pour la note active (supposons que c'est la note 60)
-(num_active_notes > 0) ? (
-  debug_note = active_notes[0];
-  gfx_printf("Note %d: start=%d, length=%d, units=%d", debug_note, note_start[debug_note], note_length[debug_note], units_count[debug_note]);
-  gfx_x = 10; gfx_y += 25;
+// Afficher le log ligne par ligne
+log_y = gfx_y;
+log_line_height = 14;
+i = 0;
+while (i < strlen(#debug_log) && log_y < 450) (
+  // Trouver la fin de la ligne courante
+  line_start = i;
+  while (i < strlen(#debug_log) && str_getchar(#debug_log, i) != 10) (  // 10 = '\n'
+    i += 1;
+  );
+  
+  // Extraire la ligne
+  strcpy_substr(#temp_line, #debug_log, line_start, i - line_start);
+  
+  // Afficher la ligne
+  gfx_x = 10;
+  gfx_y = log_y;
+  gfx_printf("%s", #temp_line);
+  
+  log_y += log_line_height;
+  i += 1;  // Passer le '\n'
 );
-
-// Affichage du status actuel  
-gfx_r = gfx_g = gfx_b = 1;  // Retour au blanc
-gfx_printf("Display: %s", current_display);
 

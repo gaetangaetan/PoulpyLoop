@@ -488,18 +488,20 @@ local function ProcessMIDINotes(track_filter, return_data)
             local volume_db_val = tonumber(GetTakeMetadata(take, "volume_db")) or 0
             local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
             local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
-            local cc08 = (is_mono_str == "true") and 0 or 1
             local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
             local cc10 = math.floor(64 + pan_val * 63 + 0.5)
             local pitch_val = tonumber(GetTakeMetadata(take, "pitch")) or 0
             local cc09 = math.floor(64 + pitch_val + 0.5)
+            -- CC29: Mode mono/stéréo spécifique pour cette note (AVANT la note)
+            local cc29 = (is_mono_str == "true") and 0 or 1
+            reaper.MIDI_InsertCC(take, false, false, start_ppq - 1, 0xB0, 0, 29, cc29, false)
+            
             -- Léger espacement pour éviter les événements simultanés
             reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq + 1, 0xB0, 0, 8, cc08, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq + 2, 0xB0, 0, 10, cc10, false)
-            reaper.MIDI_InsertCC(take, false, false, start_ppq + 3, 0xB0, 0, 9, cc09, false)
+            reaper.MIDI_InsertCC(take, false, false, start_ppq + 1, 0xB0, 0, 10, cc10, false)
+            reaper.MIDI_InsertCC(take, false, false, start_ppq + 2, 0xB0, 0, 9, cc09, false)
             local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
-            reaper.MIDI_InsertCC(take, false, false, start_ppq + 4, 0xB0, 0, 11, monitoring_val, false)
+            reaper.MIDI_InsertCC(take, false, false, start_ppq + 3, 0xB0, 0, 11, monitoring_val, false)
             
             -- Les CC108-110 sont déjà écrits au début par WriteItemStartCCs
         end
@@ -659,7 +661,6 @@ local function ApplyMIDIChanges(take, item, midi_data)
     local cc07 = math.floor(((volume_db_val + 20) / 40) * 127 + 0.5)
     
     local is_mono_str = GetTakeMetadata(take, "is_mono") or "false"
-    local cc08 = (is_mono_str == "true") and 0 or 1
     
     local pan_val = tonumber(GetTakeMetadata(take, "pan")) or 0
     local cc10 = math.floor(64 + pan_val * 63 + 0.5)
@@ -669,12 +670,15 @@ local function ApplyMIDIChanges(take, item, midi_data)
     
     local monitoring_val = tonumber(GetTakeMetadata(take, "monitoring")) or 0
     
+    -- CC29: Mode mono/stéréo spécifique pour cette note (AVANT la note)
+    local cc29 = (is_mono_str == "true") and 0 or 1
+    reaper.MIDI_InsertCC(take, false, false, start_ppq - 1, 0xB0, 0, 29, cc29, false)
+    
     -- Léger espacement pour éviter les événements simultanés
     reaper.MIDI_InsertCC(take, false, false, start_ppq, 0xB0, 0, 7, cc07, false)
-    reaper.MIDI_InsertCC(take, false, false, start_ppq + 1, 0xB0, 0, 8, cc08, false)
-    reaper.MIDI_InsertCC(take, false, false, start_ppq + 2, 0xB0, 0, 10, cc10, false)
-    reaper.MIDI_InsertCC(take, false, false, start_ppq + 3, 0xB0, 0, 9, cc09, false)
-    reaper.MIDI_InsertCC(take, false, false, start_ppq + 4, 0xB0, 0, 11, monitoring_val, false)
+    reaper.MIDI_InsertCC(take, false, false, start_ppq + 1, 0xB0, 0, 10, cc10, false)
+    reaper.MIDI_InsertCC(take, false, false, start_ppq + 2, 0xB0, 0, 9, cc09, false)
+    reaper.MIDI_InsertCC(take, false, false, start_ppq + 3, 0xB0, 0, 11, monitoring_val, false)
     
 
     

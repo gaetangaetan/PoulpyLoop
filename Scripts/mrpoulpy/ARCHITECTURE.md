@@ -135,11 +135,11 @@ gmem[8451-16642] : Longueurs des boucles (64 × 128 notes)
 ### Messages MIDI
 Communication via contrôleurs MIDI :
 - **CC7** : Volume (0-127, mappé sur -20dB à +10dB)
-- **CC8** : Mode mono/stéréo (0=mono, 1=stéréo)
 - **CC9** : Pitch (-64 à +63 demi-tons)
 - **CC10** : Pan (0-127, mappé sur -1.0 à +1.0)
 - **CC11** : Monitoring (0=OFF, 1=ON)
-- **CC13/CC14** : Position de début de bloc (mode PLAYBACK uniquement)
+- **CC29** : Mode mono/stéréo par note (0=mono, 1=stéréo)
+- **CC108-110** : Position de début d'item (mode PLAYBACK)
 - **CC19/CC20** : Durée de bloc (pour MONITOR)
 
 ## Modes de fonctionnement
