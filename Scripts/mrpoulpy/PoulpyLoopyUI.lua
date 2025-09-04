@@ -57,6 +57,7 @@ local current_take = nil
 
 -- Variables pour l'automation de pitch
 local show_automation_dialog = false
+local automation_success_mode = false  -- true = afficher le message de succès, false = afficher le formulaire
 local selected_fx_index = 0
 local selected_param_index = 0
 local pitch_sensitivity = 5.0  -- % par demi-ton (défaut: 5%)
@@ -76,6 +77,12 @@ local processing_items = {}
 local window_height = 500  -- Nouvelle variable pour la hauteur de la fenêtre
 local window_width = 700   -- Nouvelle variable pour la largeur de la fenêtre
 local render_realtime = true  -- true = realtime (idle), false = full speed
+
+-- Variables pour les notifications des outils
+local tools_notification_message = ""  -- Message à afficher
+local tools_notification_type = "success"  -- "success", "error", "info"
+local tools_notification_visible = false  -- true si une notification est visible
+local tools_confirmation_pending = ""  -- Action en attente de confirmation
 
 
 
@@ -533,85 +540,176 @@ function DrawAutomationDialog()
     
     local visible, open = reaper.ImGui_Begin(ctx, "Pitch Automation Setup", true, dialog_flags)
     if visible then
-        reaper.ImGui_Text(ctx, "Configure pitch automation for track:")
-        if automation_track then
-            local _, track_name = reaper.GetTrackName(automation_track)
-            reaper.ImGui_Text(ctx, "  " .. (track_name or "Unnamed Track"))
-        end
-        
-        reaper.ImGui_Separator(ctx)
-        
-        -- Sélection de l'effet
-        reaper.ImGui_Text(ctx, "Select FX:")
-        if reaper.ImGui_BeginCombo(ctx, "##fx_combo", fx_list[selected_fx_index] and fx_list[selected_fx_index].name or "No FX") then
-            for i, fx in pairs(fx_list) do
-                if reaper.ImGui_Selectable(ctx, fx.name, i == selected_fx_index) then
-                    selected_fx_index = i
-                    RefreshParamList(i)
-                    selected_param_index = 0
-                    -- Sauvegarder immédiatement le changement d'effet
-                    SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
-                end
+        if automation_success_mode then
+            -- Mode succès : afficher le message de confirmation
+            reaper.ImGui_Dummy(ctx, 20, 20)  -- Espace en haut
+            
+            -- Centrer le texte
+            local window_width = reaper.ImGui_GetWindowWidth(ctx)
+            local text_width = reaper.ImGui_CalcTextSize(ctx, "Automation generated successfully!")
+            reaper.ImGui_SetCursorPosX(ctx, (window_width - text_width) * 0.5)
+            
+            -- Texte de succès avec couleur verte
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), 0x00AA00FF)  -- Vert
+            reaper.ImGui_Text(ctx, "✅ Automation generated successfully!")
+            reaper.ImGui_PopStyleColor(ctx)
+            
+            reaper.ImGui_Dummy(ctx, 20, 20)  -- Espace entre le texte et le bouton
+            
+            -- Centrer le bouton
+            local button_width = 80
+            reaper.ImGui_SetCursorPosX(ctx, (window_width - button_width) * 0.5)
+            
+            if reaper.ImGui_Button(ctx, "Close", button_width, 0) then
+                show_automation_dialog = false
+                automation_success_mode = false  -- Remettre en mode formulaire pour la prochaine fois
             end
-            reaper.ImGui_EndCombo(ctx)
-        end
-        
-        -- Sélection du paramètre
-        reaper.ImGui_Text(ctx, "Select Parameter:")
-        if reaper.ImGui_BeginCombo(ctx, "##param_combo", param_list[selected_param_index] and param_list[selected_param_index].name or "No Parameter") then
-            for i, param in pairs(param_list) do
-                if reaper.ImGui_Selectable(ctx, param.name, i == selected_param_index) then
-                    selected_param_index = i
-                    -- Sauvegarder immédiatement le changement de paramètre
-                    SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
-                end
+            
+            reaper.ImGui_Dummy(ctx, 20, 10)  -- Espace en bas
+            
+        else
+            -- Mode formulaire : interface normale
+            reaper.ImGui_Text(ctx, "Configure pitch automation for track:")
+            if automation_track then
+                local _, track_name = reaper.GetTrackName(automation_track)
+                reaper.ImGui_Text(ctx, "  " .. (track_name or "Unnamed Track"))
             end
-            reaper.ImGui_EndCombo(ctx)
-        end
-        
-        -- Configuration de la sensibilité
-        reaper.ImGui_Text(ctx, "Sensitivity (% per semitone):")
-        local changed
-        changed, pitch_sensitivity = reaper.ImGui_SliderDouble(ctx, "##sensitivity", pitch_sensitivity, 0.1, 20.0, "%.1f%%")
-        
-        reaper.ImGui_Separator(ctx)
-        
-        -- Aperçu des valeurs
-        reaper.ImGui_Text(ctx, "Preview:")
-        reaper.ImGui_Text(ctx, string.format("  Pitch +12: %.1f%%", 50 + (12 * pitch_sensitivity)))
-        reaper.ImGui_Text(ctx, string.format("  Pitch   0: %.1f%%", 50))
-        reaper.ImGui_Text(ctx, string.format("  Pitch -12: %.1f%%", 50 - (12 * pitch_sensitivity)))
-        
-        reaper.ImGui_Separator(ctx)
-        
-        -- Boutons d'action
-        if reaper.ImGui_Button(ctx, "Generate Automation") then
-            if fx_list[selected_fx_index] and param_list[selected_param_index] then
-                local success = GeneratePitchAutomation(selected_fx_index, selected_param_index, pitch_sensitivity)
-                if success then
-                    -- Sauvegarder les préférences pour cette piste
-                    SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
-                    reaper.ShowMessageBox("Automation generated successfully!", "Pitch Automation", 0)
-                    show_automation_dialog = false
+            
+            reaper.ImGui_Separator(ctx)
+            
+            -- Sélection de l'effet
+            reaper.ImGui_Text(ctx, "Select FX:")
+            if reaper.ImGui_BeginCombo(ctx, "##fx_combo", fx_list[selected_fx_index] and fx_list[selected_fx_index].name or "No FX") then
+                for i, fx in pairs(fx_list) do
+                    if reaper.ImGui_Selectable(ctx, fx.name, i == selected_fx_index) then
+                        selected_fx_index = i
+                        RefreshParamList(i)
+                        selected_param_index = 0
+                        -- Sauvegarder immédiatement le changement d'effet
+                        SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
+                    end
+                end
+                reaper.ImGui_EndCombo(ctx)
+            end
+            
+            -- Sélection du paramètre
+            reaper.ImGui_Text(ctx, "Select Parameter:")
+            if reaper.ImGui_BeginCombo(ctx, "##param_combo", param_list[selected_param_index] and param_list[selected_param_index].name or "No Parameter") then
+                for i, param in pairs(param_list) do
+                    if reaper.ImGui_Selectable(ctx, param.name, i == selected_param_index) then
+                        selected_param_index = i
+                        -- Sauvegarder immédiatement le changement de paramètre
+                        SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
+                    end
+                end
+                reaper.ImGui_EndCombo(ctx)
+            end
+            
+            -- Configuration de la sensibilité
+            reaper.ImGui_Text(ctx, "Sensitivity (% per semitone):")
+            local changed
+            changed, pitch_sensitivity = reaper.ImGui_SliderDouble(ctx, "##sensitivity", pitch_sensitivity, 0.1, 20.0, "%.1f%%")
+            
+            reaper.ImGui_Separator(ctx)
+            
+            -- Aperçu des valeurs
+            reaper.ImGui_Text(ctx, "Preview:")
+            reaper.ImGui_Text(ctx, string.format("  Pitch +12: %.1f%%", 50 + (12 * pitch_sensitivity)))
+            reaper.ImGui_Text(ctx, string.format("  Pitch   0: %.1f%%", 50))
+            reaper.ImGui_Text(ctx, string.format("  Pitch -12: %.1f%%", 50 - (12 * pitch_sensitivity)))
+            
+            reaper.ImGui_Separator(ctx)
+            
+            -- Boutons d'action
+            if reaper.ImGui_Button(ctx, "Generate Automation") then
+                if fx_list[selected_fx_index] and param_list[selected_param_index] then
+                    local success = GeneratePitchAutomation(selected_fx_index, selected_param_index, pitch_sensitivity)
+                    if success then
+                        -- Sauvegarder les préférences pour cette piste
+                        SaveAutomationPrefs(automation_track, selected_fx_index, selected_param_index)
+                        -- Passer en mode succès au lieu d'afficher ShowMessageBox
+                        automation_success_mode = true
+                    else
+                        reaper.ShowMessageBox("Failed to generate automation. Check FX and parameter selection.", "Error", 0)
+                    end
                 else
-                    reaper.ShowMessageBox("Failed to generate automation. Check FX and parameter selection.", "Error", 0)
+                    reaper.ShowMessageBox("Please select both an FX and a parameter.", "Error", 0)
                 end
-            else
-                reaper.ShowMessageBox("Please select both an FX and a parameter.", "Error", 0)
-    end
-end
+            end
 
-        reaper.ImGui_SameLine(ctx)
-        if reaper.ImGui_Button(ctx, "Cancel") then
-            show_automation_dialog = false
+            reaper.ImGui_SameLine(ctx)
+            if reaper.ImGui_Button(ctx, "Cancel") then
+                show_automation_dialog = false
+                automation_success_mode = false  -- S'assurer qu'on revient en mode formulaire
+            end
         end
-        
-        reaper.ImGui_End(ctx)
     end
+    
+    -- IMPORTANT: Toujours appeler End() après Begin(), même si visible est false
+    reaper.ImGui_End(ctx)
     
     if not open then
         show_automation_dialog = false
+        automation_success_mode = false  -- Remettre en mode formulaire si la fenêtre est fermée
     end
+end
+
+--------------------------------------------------------------------------------
+-- Fonction pour afficher les notifications dans l'onglet Tools
+--------------------------------------------------------------------------------
+local function DrawToolsNotification()
+    if not tools_notification_visible then return end
+    
+    reaper.ImGui_Separator(ctx)
+    
+    -- Déterminer la couleur selon le type
+    local color
+    if tools_notification_type == "success" then
+        color = 0x00AA00FF  -- Vert
+    elseif tools_notification_type == "error" then
+        color = 0xFF0000FF  -- Rouge
+    else
+        color = 0x0080FFFF  -- Bleu (info)
+    end
+    
+    -- Afficher le message avec la couleur appropriée
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), color)
+    reaper.ImGui_Text(ctx, tools_notification_message)
+    reaper.ImGui_PopStyleColor(ctx)
+    
+    -- Boutons selon le contexte
+    if tools_confirmation_pending == "update_all_blocks" then
+        -- Boutons de confirmation pour l'update
+        reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x127349FF)  -- Vert
+        if reaper.ImGui_Button(ctx, "Confirm Update") then
+            tools_notification_visible = false
+            tools_confirmation_pending = ""
+            UpdateAllBlocks()
+        end
+        reaper.ImGui_PopStyleColor(ctx)
+        
+        reaper.ImGui_SameLine(ctx)
+        if reaper.ImGui_Button(ctx, "Cancel") then
+            tools_notification_visible = false
+            tools_confirmation_pending = ""
+            tools_notification_message = ""
+        end
+    else
+        -- Bouton OK normal
+        if reaper.ImGui_Button(ctx, "OK") then
+            tools_notification_visible = false
+            tools_notification_message = ""
+        end
+    end
+    
+    reaper.ImGui_Separator(ctx)
+end
+
+-- Fonction pour afficher une notification
+local function ShowToolsNotification(message, type)
+    tools_notification_message = message
+    tools_notification_type = type or "success"
+    tools_notification_visible = true
 end
 
 --------------------------------------------------------------------------------
@@ -1470,7 +1568,7 @@ local function UpdateAllBlocks()
     
     -- Si aucun bloc à traiter, on s'arrête
     if #blocks_to_process == 0 then
-        reaper.ShowMessageBox("No blocks to update.", "Information", 0)
+        ShowToolsNotification("ℹ️ No blocks to update.", "info")
         return
     end
     
@@ -1482,7 +1580,8 @@ local function UpdateAllBlocks()
     local function ProcessNextBlock()
         if processed_blocks >= total_blocks then
             -- Traitement terminé
-            progress_message = "Update completed!"
+            progress_message = ""
+            ShowToolsNotification("✅ Update completed! All blocks have been updated successfully.", "success")
             -- Restaurer la sélection originale
             for _, sel_item in ipairs(old_sel_items) do
                 reaper.SetMediaItemSelected(sel_item, true)
@@ -1558,7 +1657,7 @@ local function DrawTools()
     
     if reaper.ImGui_Button(ctx, "Prepare for PoulpyLoopy") then
         core.ProcessMIDINotes()
-        reaper.ShowMessageBox("PoulpyLoopy preparation completed successfully!", "Operation completed", 0)
+        ShowToolsNotification("✅ PoulpyLoopy preparation completed successfully!", "success")
     end
 
     reaper.ImGui_Separator(ctx)
@@ -1573,17 +1672,15 @@ local function DrawTools()
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x9C27B0FF)  -- Violet plus foncé
     
     if reaper.ImGui_Button(ctx, "Update all blocks") then
-        -- Demander confirmation
-        local confirm = reaper.ShowMessageBox(
-            "This operation will update all the project blocks to be compatible with the latest version.\n\n" ..
-            "This operation can take a certain time depending on the size of the project.\n\n" ..
-            "Do you want to continue ?",
-            "Global update confirmation",
-            4)  -- 4 = Yes/No
-        
-        if confirm == 6 then  -- 6 = Yes
-            UpdateAllBlocks()
-        end
+        -- Demander confirmation via ImGui
+        ShowToolsNotification(
+            "⚠️ This operation will update all project blocks to be compatible with the latest version.\n" ..
+            "This can take some time depending on project size.\n\n" ..
+            "Click 'Confirm Update' below to proceed.",
+            "info"
+        )
+        -- Marquer qu'on attend une confirmation pour l'update
+        tools_confirmation_pending = "update_all_blocks"
     end
     
     reaper.ImGui_PopStyleColor(ctx, 3)
@@ -1593,6 +1690,9 @@ local function DrawTools()
     end
     
     reaper.ImGui_Separator(ctx)
+    
+    -- Afficher les notifications s'il y en a
+    DrawToolsNotification()
 end
 
 

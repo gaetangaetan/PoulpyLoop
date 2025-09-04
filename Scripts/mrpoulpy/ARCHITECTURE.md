@@ -8,14 +8,20 @@
 - **Core**: v0020
 - **Plugin JSFX**: v0618
 
+### Améliorations v0020
+- ✅ **Correction des erreurs ImGui sur macOS** : Gestion robuste des fenêtres Begin/End
+- ✅ **Système de notifications intégrées** : Remplacement des ShowMessageBox par des notifications ImGui
+- ✅ **Interface d'automation améliorée** : Fenêtre modale avec confirmation intégrée
+- ✅ **Compatibilité multiplateforme** : Support complet Windows/macOS/Linux
+
 ## Architecture générale
 
 ```
-PoulpyLoopy System
+PoulpyLoopy System v0020
 ├── Plugin JSFX (PoulpyLoop)          # Moteur audio temps réel
 ├── Interface Lua (PoulpyLoopy.lua)   # Point d'entrée principal
 ├── Core Logic (PoulpyLoopyCore.lua)  # Logique métier et traitement MIDI
-├── UI Module (PoulpyLoopyUI.lua)     # Interface utilisateur ImGui
+├── UI Module (PoulpyLoopyUI.lua)     # Interface utilisateur ImGui moderne
 └── Service (PoulpyLoopyService.lua)  # Service de synchronisation
 ```
 
@@ -83,31 +89,51 @@ Module central contenant :
 ### 4. Interface utilisateur - PoulpyLoopyUI.lua
 **Fichier**: `Scripts/mrpoulpy/PoulpyLoopyUI.lua`
 
-Interface ImGui complète avec :
+Interface ImGui moderne avec gestion robuste des fenêtres :
+
+#### Système de fenêtres (v0020)
+- **Gestion stricte Begin/End** : Correction des erreurs d'assertion ImGui
+- **Notifications intégrées** : Système de messages sans fenêtres popup natives
+- **Confirmation modale** : Dialogues intégrés pour actions critiques
+- **Compatibilité macOS** : Résolution des conflits API native/ImGui
 
 #### Onglet "Loop Editor"
+- **Mode LIVE/PLAYBACK** : Bouton d'état visuel avec couleurs
 - **Sélection du type de boucle** : Combo box avec les 5 types
 - **Paramètres spécifiques** selon le type :
   - RECORD : Nom, Mono/Stéréo, Pan, Volume, Monitoring
   - PLAY/OVERDUB : Référence, Pan, Volume, Pitch, Monitoring
   - MONITOR : Mono/Stéréo, Pan, Volume
 - **Boutons d'action** :
-  - Apply : Application des paramètres
+  - Apply : Application des paramètres avec traitement asynchrone
   - Insert click : Insertion d'un clic métronome
-  - Update Pitch Automation : Génération d'automation de pitch
+  - Update Pitch Automation : Interface modale pour génération d'automation
 
 #### Onglet "Options"
 - **Modes globaux** :
   - LIVE vs PLAYBACK (lecture seule)
   - Enregistrement des boucles MONITOR (ON/OFF)
-- **Monitoring à l'arrêt** : Configuration par piste avec PoulpyLoop
+- **Monitoring à l'arrêt** : Configuration par piste avec tableau interactif
 
 #### Onglet "Tools"
 - **Gestion des loopers** : Ajout de plugins PoulpyLoop aux pistes
 - **Configuration audio** : Sélection des entrées mono/stéréo
 - **Rendu audio** : Export des sélections en mode temps réel ou accéléré
-- **Préparation MIDI** : Génération complète des données MIDI
-- **Mise à jour globale** : Régénération de tous les blocs du projet
+- **Préparation MIDI** : Génération complète avec notification de succès
+- **Mise à jour globale** : Régénération avec confirmation et progression
+
+#### Système de notifications (v0020)
+```lua
+-- Types de notifications
+"success" : Messages verts avec ✅
+"error"   : Messages rouges avec ❌ 
+"info"    : Messages bleus avec ℹ️
+"warning" : Messages oranges avec ⚠️
+
+-- Gestion des confirmations
+tools_confirmation_pending : Système d'actions en attente
+DrawToolsNotification()    : Affichage unifié des notifications
+```
 
 ### 5. Service de synchronisation - PoulpyLoopyService.lua
 **Fichier**: `Scripts/mrpoulpy/PoulpyLoopyService.lua`
@@ -148,11 +174,13 @@ Communication via contrôleurs MIDI :
 - **Enregistrement actif** : Toutes les fonctions d'enregistrement disponibles
 - **Contrôle total** : Modification des boucles en temps réel
 - **Monitoring** : Signal d'entrée routé vers la sortie selon les paramètres
+- **Interface** : Bouton rouge avec tooltip explicatif
 
 ### Mode PLAYBACK
 - **Lecture seule** : Aucun enregistrement possible
 - **Synchronisation temporelle** : Les boucles démarrent selon leur position dans le projet
 - **Idéal pour** : Replay de projets, performances live sans risque de modification
+- **Interface** : Bouton vert avec protection visuelle
 
 ## Gestion des couleurs
 
@@ -166,10 +194,13 @@ Le système utilise un code couleur pour identifier visuellement les types de bo
 
 ## Fonctionnalités avancées
 
-### Automation de pitch
-- **Génération automatique** : Création d'envelopes d'automation basées sur les paramètres de pitch des boucles
+### Automation de pitch (v0020)
+- **Interface modale intégrée** : Fenêtre de configuration sans conflit ImGui
+- **Génération automatique** : Création d'envelopes d'automation basées sur les paramètres de pitch
 - **Configuration par piste** : Sélection de l'effet et du paramètre cible
-- **Sensibilité réglable** : Contrôle de l'amplitude de l'automation
+- **Sensibilité réglable** : Contrôle de l'amplitude de l'automation (0.1% à 20% par demi-ton)
+- **Préférences sauvegardées** : Mémorisation des choix FX/paramètre par piste
+- **Confirmation de succès** : Notification intégrée remplaçant ShowMessageBox
 
 ### Gestion des folders
 - **Organisation hiérarchique** : Support des dossiers de pistes REAPER
@@ -180,6 +211,17 @@ Le système utilise un code couleur pour identifier visuellement les types de bo
 - **Export sélectif** : Rendu des boucles sélectionnées uniquement
 - **Modes de rendu** : Temps réel (idle) ou vitesse maximale
 - **Organisation automatique** : Création du dossier Media et nommage horodaté
+- **Gestion multi-piste** : Rendu parallèle avec restauration de sélection
+
+### Traitement asynchrone (v0020)
+```lua
+-- Traitement progressif pour gros projets
+local function processNextItem()
+    -- Traitement d'un élément
+    current_item_index = current_item_index + 1
+    reaper.defer(processNextItem)  -- Programmation du suivant
+end
+```
 
 ## Sécurité et robustesse
 
@@ -187,16 +229,32 @@ Le système utilise un code couleur pour identifier visuellement les types de bo
 - **Noms de boucles** : Vérification d'unicité dans le folder
 - **Références** : Validation de l'existence des boucles référencées
 - **Types compatibles** : Contrôle de cohérence des modifications groupées
+- **Pointeurs valides** : Vérification des takes avec `ValidatePtr2()`
 
-### Gestion d'erreurs
+### Gestion d'erreurs (v0020)
+- **Fenêtres ImGui** : Gestion stricte Begin/End pour éviter les fuites
+- **API natives vs ImGui** : Séparation des contextes pour éviter les conflits
 - **Mémoire saturée** : Détection et gestion gracieuse des dépassements
 - **Takes invalides** : Vérification de la validité des pointeurs
 - **Mode PLAYBACK** : Protection contre les modifications accidentelles
 
 ### Performance
-- **Traitement asynchrone** : Mise à jour progressive des gros projets
+- **Traitement asynchrone** : Mise à jour progressive des gros projets avec `reaper.defer()`
 - **Optimisation mémoire** : Gestion efficace de la mémoire audio
 - **Interface réactive** : Calcul dynamique de la taille des fenêtres
+- **Cache des préférences** : Sauvegarde intelligente des paramètres utilisateur
+
+## Compatibilité multiplateforme (v0020)
+
+### Problèmes résolus
+- **macOS** : Correction des erreurs d'assertion ImGui Begin/BeginChild
+- **ShowMessageBox** : Remplacement par notifications ImGui natives
+- **Contextes graphiques** : Gestion propre des fenêtres modales
+
+### Support actuel
+- **Windows** : Support complet, toutes fonctionnalités
+- **macOS** : Support complet, erreurs ImGui résolues
+- **Linux** : Support théorique (architecture compatible)
 
 ## Extensions et personnalisation
 
@@ -209,6 +267,7 @@ Le système utilise un code couleur pour identifier visuellement les types de bo
 - **Architecture modulaire** : Séparation claire des responsabilités
 - **API documentée** : Fonctions exportées pour extension
 - **Configuration persistante** : Sauvegarde des préférences utilisateur
+- **Système de notifications extensible** : Framework pour nouveaux types de messages
 
 ## Cas d'usage typiques
 
@@ -230,6 +289,24 @@ Le système utilise un code couleur pour identifier visuellement les types de bo
 3. **Variations** : Mode PLAY avec contrôle de pitch pour variations
 4. **Automation** : Génération d'automation pour évolution temporelle
 
+## Debugging et maintenance
+
+### Outils de diagnostic
+- **Console de debug** : Fonction `debug_console()` pour logs détaillés
+- **Validation des pointeurs** : Vérifications systématiques des objets REAPER
+- **Messages de progression** : Notifications en temps réel des opérations longues
+
+### Logs et traces
+```lua
+-- Système de logging intégré
+print("DEBUG: Automation generated successfully!")  -- Traces de développement
+progress_message = "Processing... (X/Y)"             -- Messages utilisateur
+```
+
 ## Conclusion
 
-PoulpyLoopy représente un système complet et mature pour le bouclage audio dans REAPER, offrant une approche unique combinant la puissance du traitement temps réel JSFX avec la flexibilité des scripts Lua. Son architecture modulaire et ses fonctionnalités avancées en font un outil adapté aussi bien à la performance live qu'à la production en studio.
+PoulpyLoopy v0020 représente un système complet et mature pour le bouclage audio dans REAPER, offrant une approche unique combinant la puissance du traitement temps réel JSFX avec la flexibilité des scripts Lua. 
+
+Cette version apporte une **robustesse significative** grâce aux corrections ImGui et au système de notifications intégrées, garantissant une **compatibilité multiplateforme** fiable. Son architecture modulaire et ses fonctionnalités avancées en font un outil adapté aussi bien à la performance live qu'à la production en studio, avec une **expérience utilisateur moderne** et **sans conflits système**.
+
+Les améliorations v0020 consolident PoulpyLoopy comme une solution professionnelle pour le live looping, avec une attention particulière portée à la **stabilité sur macOS** et à l'**interface utilisateur cohérente**.
