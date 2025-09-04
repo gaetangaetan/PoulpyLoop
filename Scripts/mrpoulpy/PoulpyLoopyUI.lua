@@ -684,23 +684,7 @@ local function DrawLoopEditor()
             reaper.ImGui_Text(ctx, "No MIDI note found")
         end
         
-        -- DEBUG: Infos de position (temporaire pour debug)
-        if item then
-            local item_start = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
-            local tempo = reaper.Master_GetTempo()
-            local item_start_beats = reaper.TimeMap2_timeToBeats(0, item_start, nil, nil, nil, nil)
-            local item_start_sixteenths = math.floor(item_start_beats * 16)
-            local cc108 = item_start_sixteenths & 0x7F
-            local cc109 = (item_start_sixteenths >> 7) & 0x7F
-            local cc110 = (item_start_sixteenths >> 14) & 0x7F
-            
-            reaper.ImGui_Separator(ctx)
-            reaper.ImGui_Text(ctx, "DEBUG - Position encoding:")
-            reaper.ImGui_Text(ctx, string.format("Item start: %.3fs (%.3f beats)", item_start, item_start_beats))
-            reaper.ImGui_Text(ctx, string.format("Sixteenths: %d", item_start_sixteenths))
-            reaper.ImGui_Text(ctx, string.format("CC108=%d, CC109=%d, CC110=%d", cc108, cc109, cc110))
-            reaper.ImGui_Separator(ctx)
-        end
+
         
         reaper.ImGui_Separator(ctx)
 

@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0618 // debug pitch guitar rig
+desc:PoulpyLoop_v0619 // playback and offset working
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
@@ -80,13 +80,7 @@ last_pitch = 0.5; // Valeur par défaut (milieu)
 // Variable temporaire pour stocker le mode mono/stéréo courant
 current_mode = 0; // Par défaut mono
 
-// Variables de debug persistantes
-debug_cc29_received = -1; // -1 = pas reçu, 0/1 = valeur reçue
-debug_note_mode = -1;     // Mode utilisé lors du startRecording
 
-// String pour accumler les logs de debug
-debug_log = 0;
-strcpy(#debug_log, "");
 
 // Variables pour la position de début du bloc (mode PLAYBACK via CC108-110) 
 item_start_sixteenths = 0;  // Position de début en 1/16 beats  
@@ -194,9 +188,7 @@ function startRecording(note, note_mode)
     sprintf(current_display, "PLAYBACK mode : recording disabled");
     0; // Ne rien faire
   ) : (
-    // DEBUG: Logger le début de l'allocation
-    sprintf(#temp_str, "START_REC N%d %s\n", note, note_mode ? "ST" : "MO");
-    strcat(#debug_log, #temp_str);
+
     
     note_length[note] = 0;
     units_count[note] = 1;
@@ -209,8 +201,7 @@ function startRecording(note, note_mode)
       is_recording[note] = 0;
       note_start[note] = 0;
       strcpy(current_display, "Memo saturée: impossible rec");
-      sprintf(#temp_str, "ALLOC_FAILED N%d\n", note);
-      strcat(#debug_log, #temp_str);
+
     ) : (
       note_start[note] = nu * UNIT_SIZE;
       
@@ -218,9 +209,7 @@ function startRecording(note, note_mode)
       units_needed = note_mode ? 2 : 1;  // Stéréo = 2 unités, Mono = 1 unité
       next_free_unit[0] = nu + units_needed;
       
-      // DEBUG: Logger l'allocation réussie
-      sprintf(#temp_str, "ALLOC_OK N%d @%d units=%d\n", note, note_start[note], units_needed);
-      strcat(#debug_log, #temp_str);
+
     );
   );
 );
@@ -255,7 +244,7 @@ gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 reset_signal = gmem[GMEM_RESET_PLUGINS_BASE + instance_id];
 (reset_signal > 0) ? (
   // Effectuer le reset complet
-  printf("RESET: Reset du plugin PoulpyLoop instance %d (adresse GMEM %d)\n", instance_id, GMEM_RESET_PLUGINS_BASE + instance_id);
+
   
   // Réinitialiser toutes les structures de données
   i = 0;
@@ -280,11 +269,8 @@ reset_signal = gmem[GMEM_RESET_PLUGINS_BASE + instance_id];
   // Réinitialiser les variables temporaires
   temp_block_length = 0;
   current_mode = 0; // Réinitialiser le mode à mono
-  debug_cc29_received = -1;
-  debug_note_mode = -1;
   
-  // DEBUG: Réinitialiser le log de debug
-  strcpy(#debug_log, "=== RESET ===\n");
+
   
   // Stocker le numéro de reset et acquitter le signal
   last_reset_number = reset_signal;
@@ -339,15 +325,14 @@ while (
         ) : (msg2 == 29) ? (
             // CC29: Définit le mode mono/stéréo pour la prochaine note
             current_mode = msg3;
-            debug_cc29_received = msg3;
         ) : (msg2 == 108) ? (
             // CC108: Bits 0-6 de item_start_sixteenths
             cc108_val = msg3;
-            printf("DEBUG: CC108 received: %d\n", msg3);
+
         ) : (msg2 == 109) ? (
             // CC109: Bits 7-13 de item_start_sixteenths  
             cc109_val = msg3;
-            printf("DEBUG: CC109 received: %d\n", msg3);
+
         ) : (msg2 == 110) ? (
             // CC110: Bits 14-20 de item_start_sixteenths
             cc110_val = msg3;
@@ -355,7 +340,7 @@ while (
             item_start_sixteenths = cc108_val + (cc109_val << 7) + (cc110_val << 14);
             item_start_beats = item_start_sixteenths / 16.0;
             sprintf(current_display, "Item start: %.3f beats", item_start_beats);
-            printf("DEBUG: CC110 received: %d -> Item start: %.3f beats (%d/16)\n", msg3, item_start_beats, item_start_sixteenths);
+
         );
       );
     );
@@ -396,23 +381,23 @@ while (
               is_playing[idx] = 1;
               
               // Calculer l'offset basé sur beat_position et item_start_beats
-              printf("DEBUG: RECORD beat_position=%.3f, item_start_beats=%.3f\n", beat_position, item_start_beats);
+
               (note_length[idx] > 0) ? (
                 offset_beats = beat_position - item_start_beats;
-                printf("DEBUG: RECORD offset_beats=%.3f\n", offset_beats);
+
                 (offset_beats >= 0) ? (
                   loop_length_sec = note_length[idx] / srate;
                   loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
-                  printf("DEBUG: RECORD loop_length_beats=%.3f\n", loop_length_beats);
+
                   actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
                   // Correction: éviter le cas où offset_beats est exactement égal à loop_length_beats
                   (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
-                  printf("DEBUG: RECORD actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+
                 ) : (
                   read_pos[idx] = 0;
-                  printf("DEBUG: RECORD offset_beats < 0, read_pos=0\n");
+
                 );
               ) : (
                 read_pos[idx] = 0;
@@ -426,7 +411,7 @@ while (
             );
           ) : (
             // En mode LIVE, comportement normal
-            debug_note_mode = current_mode;
+
             startRecording(idx, current_mode);
             loop_type[idx] = 0;
           );
@@ -448,10 +433,10 @@ while (
                   (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
-                  printf("DEBUG: PLAY actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+
                 ) : (
                   read_pos[idx] = 0;
-                  printf("DEBUG: PLAY offset_beats < 0, read_pos=0\n");
+
                 );
               ) : (
                 read_pos[idx] = 0;
@@ -466,9 +451,7 @@ while (
           ) : (
             // En mode LIVE, comportement normal
             (note_length[idx] > 0) ? (
-              // DEBUG: Logger le début de lecture PLAY
-              sprintf(#temp_str, "START_PLAY N%d @%d len=%d\n", idx, note_start[idx], note_length[idx]);
-              strcat(#debug_log, #temp_str);
+
               
               is_playing[idx] = 1;
               read_pos[idx] = 0;  // Commencer au début en mode LIVE
@@ -494,10 +477,10 @@ while (
                   (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
-                  printf("DEBUG: OVERDUB actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+
                 ) : (
                   read_pos[idx] = 0;
-                  printf("DEBUG: OVERDUB offset_beats < 0, read_pos=0\n");
+
                 );
               ) : (
                 read_pos[idx] = 0;
@@ -530,23 +513,23 @@ while (
               is_playing[idx] = 1;
               
               // Calculer l'offset basé sur beat_position et item_start_beats
-              printf("DEBUG: MONITOR beat_position=%.3f, item_start_beats=%.3f\n", beat_position, item_start_beats);
+
               (note_length[idx] > 0) ? (
                 offset_beats = beat_position - item_start_beats;
-                printf("DEBUG: MONITOR offset_beats=%.3f\n", offset_beats);
+
                 (offset_beats >= 0) ? (
                   loop_length_sec = note_length[idx] / srate;
                   loop_length_beats = loop_length_sec * (tempo / 60.0);  // Conversion en beats
-                  printf("DEBUG: MONITOR loop_length_beats=%.3f\n", loop_length_beats);
+
                   actual_offset_beats = offset_beats % loop_length_beats;  // Modulo pour bouclage
                   // Correction: éviter le cas où offset_beats est exactement égal à loop_length_beats
                   (actual_offset_beats >= loop_length_beats) ? actual_offset_beats = loop_length_beats - 0.001;
                   actual_offset_sec = actual_offset_beats * (60.0 / tempo);
                   read_pos[idx] = actual_offset_sec * srate;
-                  printf("DEBUG: MONITOR actual_offset_beats=%.3f, read_pos=%.0f\n", actual_offset_beats, read_pos[idx]);
+
                 ) : (
                   read_pos[idx] = 0;
-                  printf("DEBUG: MONITOR offset_beats < 0, read_pos=0\n");
+
                 );
               ) : (
                 read_pos[idx] = 0;
@@ -582,12 +565,7 @@ while (
         note_pos_index = GMEM_NOTE_START_POS_BASE + instance_id * 128 + idx;
         gmem[note_pos_index] = -1;
         
-        // DEBUG: Logger la fin de l'enregistrement
-        (is_recording[idx] || note_length[idx] > 0) ? (
-          end_pos = rec_mode[idx] ? note_start[idx] + 2*note_length[idx] : note_start[idx] + note_length[idx];
-          sprintf(#temp_str, "END_REC N%d @%d len=%d\n", idx, note_start[idx], note_length[idx]);
-          strcat(#debug_log, #temp_str);
-        );
+
         
         is_playing[idx] = 0;
         is_recording[idx] = 0;
@@ -698,11 +676,7 @@ loop(num_active_notes,
         ) : ( // STEREO
           baseOfs = note_start[n] + 2*effective_pos;
           
-          // DEBUG: Détecter les dépassements potentiels
-          (effective_pos >= curLen) ? (
-            sprintf(#temp_str, "OVERFLOW N%d pos=%d baseOfs=%d\n", n, effective_pos, baseOfs);
-            strcat(#debug_log, #temp_str);
-          );
+
           
           sampleL = the_memory[baseOfs];
           sampleR = the_memory[baseOfs+1];
@@ -772,14 +746,18 @@ loop(num_active_notes,
 (monitoring && any_loop_active && playback_mode == 0 && (play_state || !slider3)) ? (
   // Déterminer le mode de monitoring basé sur les notes actives
   monitor_mode = 0; // Par défaut mono
+
   i = 0;
   loop(num_active_notes,
     n = active_notes[i];
     (loop_type[n] != -1) ? (
       monitor_mode = rec_mode[n]; // Prendre le mode de la note active
+
     );
     i += 1;
   );
+  
+
   
   (monitor_mode == 0) ? ( // Mono - lire uniquement l'entrée gauche
     monL = inL * volumeFactor * gainL;
@@ -809,45 +787,5 @@ loop(num_active_notes,
 
 )
 
-@gfx 640 480
 
-// Configurer une police plus grande
-gfx_setfont(1, "Arial", 25);  // Police Arial, taille 16
-
-gfx_r = gfx_g = gfx_b = 1;
-gfx_x = 10; gfx_y = 10;
-
-// Affichage de beat_position en gros (toujours visible)
-gfx_setfont(2, "Arial", 30, 'B');
-gfx_r = 0; gfx_g = 1; gfx_b = 0;  // Vert vif
-gfx_printf("BEAT: %.3f", beat_position);
-gfx_x = 10; gfx_y += 35;
-
-// Affichage du log de debug
-gfx_setfont(1, "Courier New", 18);  // Police agrandie de 150%
-gfx_r = 1; gfx_g = 1; gfx_b = 1;  // Blanc
-gfx_x = 10; gfx_y = 35;
-
-// Afficher le log ligne par ligne
-log_y = gfx_y;
-log_line_height = 14;
-i = 0;
-while (i < strlen(#debug_log) && log_y < 450) (
-  // Trouver la fin de la ligne courante
-  line_start = i;
-  while (i < strlen(#debug_log) && str_getchar(#debug_log, i) != 10) (  // 10 = '\n'
-    i += 1;
-  );
-  
-  // Extraire la ligne
-  strcpy_substr(#temp_line, #debug_log, line_start, i - line_start);
-  
-  // Afficher la ligne
-  gfx_x = 10;
-  gfx_y = log_y;
-  gfx_printf("%s", #temp_line);
-  
-  log_y += log_line_height;
-  i += 1;  // Passer le '\n'
-);
 

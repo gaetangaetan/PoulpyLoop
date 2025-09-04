@@ -564,8 +564,8 @@ local function reset_poulpyloop_plugin(track)
             end
             
             -- Message de debug pour confirmer
-            reaper.ShowConsoleMsg(string.format("RESET %d envoyé pour toutes les instances sur piste '%s'\n", 
-                         reset_counter, reaper.GetTrackName(track)))
+            -- reaper.ShowConsoleMsg(string.format("RESET %d envoyé pour toutes les instances sur piste '%s'\n", 
+            --              reset_counter, reaper.GetTrackName(track)))
             return true
         end
     end
