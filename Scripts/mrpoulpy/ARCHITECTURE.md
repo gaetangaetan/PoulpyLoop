@@ -8,6 +8,7 @@
 - **Core**: v0020
 - **Plugin JSFX**: v0618
 
+
 ### Améliorations v0020
 - ✅ **Correction des erreurs ImGui sur macOS** : Gestion robuste des fenêtres Begin/End
 - ✅ **Système de notifications intégrées** : Remplacement des ShowMessageBox par des notifications ImGui
