@@ -66,6 +66,7 @@ monitoring = 1; // Par défaut, le monitoring est activé (ON)
 
 // Variable pour stocker le dernier pitch
 last_pitch = 0.5; // Valeur par défaut (milieu)
+last_pitch_sent = -1; // dernier CC9 envoye a Guitar Rig (-1 = force le 1er envoi) (C2)
 
 // Variable temporaire pour stocker le mode mono/stéréo courant
 current_mode = 0; // Par défaut mono
@@ -252,12 +253,6 @@ slider3 = gmem[GMEM_MONITORING_STOP_BASE + instance_id];
 
 // Mode LIVE/PLAYBACK : lu une seule fois par bloc, reutilise dans @sample (C1)
 playback_mode = get_playback_mode();
-
-// Envoi périodique du pitch pour forcer Guitar Rig à se synchroniser
-(num_active_notes > 0) ? (
-  // Envoyer CC09 avec la valeur actuelle du pitch pour forcer la synchronisation
-  midisend(0, $xB0, 9, slider2 + 64);
-);
 
 // Obtenir la position de lecture actuelle
 play_position = play_position_samples / srate;
@@ -575,6 +570,17 @@ while (
   last_panFactor = panFactor;
 );
 
+// Envoi du pitch (CC09) vers Guitar Rig (C2).
+// Avant : renvoye a chaque bloc des qu'une note est active (flux MIDI permanent).
+// Desormais : seulement quand la valeur change OU qu'une note vient de demarrer dans
+// ce bloc (resynchro au demarrage de note). Place apres le traitement MIDI pour
+// refleter slider2 et les notes du bloc courant.
+pitch_to_send = slider2 + 64;
+(num_active_notes > 0 && (pitch_to_send != last_pitch_sent || midi_notes_processed > 0)) ? (
+  midisend(0, $xB0, 9, pitch_to_send);
+  last_pitch_sent = pitch_to_send;
+);
+
 @sample
 // Bypass logiciel si aucune note active et monitoring désactivé
 (num_active_notes == 0 ) ? (
@@ -605,6 +611,9 @@ monR = 0;
 
 // Variable pour détecter si au moins une boucle est active
 any_loop_active = 0;
+// Mode de monitoring mono/stereo : capture dans la boucle principale (I3),
+// equivaut a l'ancienne 2e boucle qui prenait le rec_mode de la derniere note active.
+monitor_mode = 0;
 
 // Mode LIVE/PLAYBACK : recupere une fois par bloc (voir @block, C1)
 
@@ -613,6 +622,7 @@ loop(num_active_notes,
   n = active_notes[i];
   (loop_type[n] != -1) ? (  // Boucle active
     any_loop_active = 1;
+    monitor_mode = rec_mode[n]; // capture pour le monitoring (I3)
     curLen = note_length[n];
     monitor_length = 0;
     unitCount = units_count[n];
@@ -722,21 +732,7 @@ loop(num_active_notes,
 // Monitoring avec pan sinusoïdal (uniquement si une boucle est active, qu'on n'est pas en mode PLAYBACK
 // ET que la lecture est active OU que le monitoring à l'arrêt n'est pas activé)
 (monitoring && any_loop_active && playback_mode == 0 && (play_state || !slider3)) ? (
-  // Déterminer le mode de monitoring basé sur les notes actives
-  monitor_mode = 0; // Par défaut mono
-
-  i = 0;
-  loop(num_active_notes,
-    n = active_notes[i];
-    (loop_type[n] != -1) ? (
-      monitor_mode = rec_mode[n]; // Prendre le mode de la note active
-
-    );
-    i += 1;
-  );
-  
-
-  
+  // monitor_mode est deja calcule dans la boucle principale (I3)
   (monitor_mode == 0) ? ( // Mono - lire uniquement l'entrée gauche
     monL = inL * volumeFactor * gainL;
     monR = inL * volumeFactor * gainR;  // Même signal en mono
