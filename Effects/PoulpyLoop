@@ -21,7 +21,6 @@ max_units = 32000000 / UNIT_SIZE;
 
 
 
-time_left_str = 100;
 current_display= 200;
 note_start    = 300;
 note_length   = note_start    + NUM_NOTES;
@@ -50,7 +49,6 @@ loop(NUM_NOTES,
   is_recording[i] = 0;
   read_pos[i] = 0;  
   rec_mode[i] = 0;
-  block_length[i] = 0; // Initialisation de block_length
   i += 1;
 );
 next_free_unit[0] = 0;
@@ -61,18 +59,9 @@ loop(NUM_NOTES,
   i += 1;
 );
 
-//strcpy(current_display, "Sampler init OK");
-strcpy(time_left_str, "Loading...");
-
 volumeFactor = 1.0;
 panFactor    = 0.5;
 monitoring = 1; // Par défaut, le monitoring est activé (ON)
-
-last_loop_type = -2;
-last_loop_mode = -2;
-last_volume = -1.0;
-last_pan = -1.0;
-last_monitoring = -1;
 
 // Variable pour stocker le dernier pitch
 last_pitch = 0.5; // Valeur par défaut (milieu)
@@ -88,7 +77,6 @@ item_start_beats = 0.0;     // Position de début en beats (calculée)
 cc108_val = 0; cc109_val = 0; cc110_val = 0;  // Valeurs des 3 CC
 
 play_state = 0;
-track_id_found = -1;
 
 // Variable pour stocker le dernier numéro de reset
 last_reset_number = 0;
@@ -144,30 +132,6 @@ function get_record_monitor_loops_mode()
 function get_playback_mode()
 (
   gmem[GMEM_PLAYBACK_MODE];
-);
-
-// Fonction pour mettre à jour les statistiques dans gmem
-function update_stats()
-(
-  // Base pour les statistiques de cette instance
-  stats_base = GMEM_STATS_BASE + instance_id * 3;
-  
-  // Calculer la mémoire utilisée en Mo (8 octets par échantillon car format 64 bits)
-  memory_used_mb = (next_free_unit[0] * UNIT_SIZE * 8) / (1024 * 1024);
-  gmem[stats_base] = memory_used_mb;
-  
-  // Calculer le temps restant en secondes
-  memory_left_seconds = time_left;
-  gmem[stats_base + 1] = memory_left_seconds;
-  
-  // Compter le nombre de notes actives
-  notes_count = 0;
-  i = 0;
-  loop(NUM_NOTES,
-    (note_length[i] > 0) ? notes_count += 1;
-    i += 1;
-  );
-  gmem[stats_base + 2] = notes_count;
 );
 
 function cc7ToGain(ccVal)
