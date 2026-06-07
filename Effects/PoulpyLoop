@@ -37,9 +37,6 @@ active_notes = next_free_unit + NUM_NOTES; // 128 cases pour les notes actives
 the_memory = active_notes + NUM_NOTES;
 num_active_notes = 0;
 
-// Variable unique pour la longueur temporaire
-temp_block_length = 0;
-
 i = 0;
 loop(NUM_NOTES,
   note_start[i] = 0;
@@ -238,7 +235,6 @@ reset_signal = gmem[GMEM_RESET_PLUGINS_BASE + instance_id];
   num_active_notes = 0;
   
   // Réinitialiser les variables temporaires
-  temp_block_length = 0;
   current_mode = 0; // Réinitialiser le mode à mono
   
 
@@ -286,10 +282,6 @@ while (
             panFactor = cc10ToPan(msg3);
         ) : (msg2 == 11) ? (
             monitoring = msg3 > 0 ? 1 : 0;
-        ) : (msg2 == 19) ? (
-            temp_block_length = msg3 * 128;
-        ) : (msg2 == 20) ? (
-            temp_block_length += msg3;
         ) : (msg2 == 29) ? (
             // CC29: Définit le mode mono/stéréo pour la prochaine note
             current_mode = msg3;
