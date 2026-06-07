@@ -27,8 +27,26 @@ local COLORS = {
 
 local LOOP_TYPES = {"RECORD", "OVERDUB", "PLAY", "MONITOR", "UNUSED"}
 
--- Indices gmem
-local GMEM = {
+--------------------------------------------------------------------------------
+-- Plan mémoire gmem (source unique = plugin JSFX)
+--------------------------------------------------------------------------------
+-- La source de vérité du plan mémoire gmem est le plugin JSFX (Effects/PoulpyLoop),
+-- entre les marqueurs <GMEM_CONTRACT_BEGIN> et <GMEM_CONTRACT_END>. On lit ces
+-- déclarations directement pour éviter toute désynchronisation JSFX <-> Lua (cf. I1).
+
+-- Constantes propres aux scripts Lua : NE FONT PAS partie du contrat JSFX
+-- (le plugin ne les lit pas). Conservées ici pour compatibilité.
+local GMEM_LUA_ONLY = {
+    FORCE_ANALYZE = 16000,
+    MIDI_SYNC_DATA_BASE = 16001,
+    MESSAGE_LENGTH = 16999,
+    MESSAGE_BASE = 17000,
+    AFFICHAGE_CONSOLE_DEBUG = 17100
+}
+
+-- Valeurs de secours : miroir du contrat JSFX, utilisées UNIQUEMENT si la lecture
+-- du fichier échoue (filet de sécurité pour le live). À garder cohérent avec le JSFX.
+local GMEM_FALLBACK = {
     RECORD_MONITOR_MODE = 0,
     PLAYBACK_MODE = 1,
     STATS_BASE = 2,
@@ -36,13 +54,52 @@ local GMEM = {
     MONITORING_STOP_BASE = 195,
     NOTE_START_POS_BASE = 259,
     LOOP_LENGTH_BASE = 8451,
-    FORCE_ANALYZE = 16000,
-    MIDI_SYNC_DATA_BASE = 16001,
-    RESET_PLUGINS_BASE = 16200,  -- Base pour les reset de plugins (64 instances max)
-    AFFICHAGE_CONSOLE_DEBUG = 17100,
-    MESSAGE_BASE = 17000,
-    MESSAGE_LENGTH = 16999
+    RESET_PLUGINS_BASE = 16200
 }
+
+-- Lit le contrat gmem depuis le JSFX (entre les marqueurs) et construit la table GMEM.
+local function LoadGmemContract()
+    local parsed = {}
+    local path = reaper.GetResourcePath() .. "/Effects/PoulpyLoop"
+    local f = io.open(path, "r")
+    if f then
+        local in_block = false
+        for line in f:lines() do
+            if line:find("<GMEM_CONTRACT_BEGIN>", 1, true) then
+                in_block = true
+            elseif line:find("<GMEM_CONTRACT_END>", 1, true) then
+                in_block = false
+            elseif in_block then
+                local name, val = line:match("^%s*GMEM_([%w_]+)%s*=%s*(%-?%d+)%s*;")
+                if name and val then
+                    parsed[name] = tonumber(val)
+                end
+            end
+        end
+        f:close()
+    end
+
+    -- Vérifier que tout le contrat a bien été lu ; sinon repli sur les valeurs de secours.
+    local complete = true
+    for key in pairs(GMEM_FALLBACK) do
+        if parsed[key] == nil then complete = false break end
+    end
+    if not complete then
+        reaper.ShowConsoleMsg("PoulpyLoopy: contrat gmem introuvable ou incomplet dans " ..
+            "Effects/PoulpyLoop, utilisation des valeurs de secours.\n")
+        parsed = {}
+        for key, value in pairs(GMEM_FALLBACK) do parsed[key] = value end
+    end
+
+    -- Ajouter les constantes propres au Lua (sans écraser le contrat).
+    for key, value in pairs(GMEM_LUA_ONLY) do
+        if parsed[key] == nil then parsed[key] = value end
+    end
+
+    return parsed
+end
+
+local GMEM = LoadGmemContract()
 
 --------------------------------------------------------------------------------
 -- Fonctions utilitaires

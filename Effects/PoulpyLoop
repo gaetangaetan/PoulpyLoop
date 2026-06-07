@@ -1,4 +1,4 @@
-desc:PoulpyLoop_v0619 // playback and offset working
+desc:PoulpyLoop_v0702 // uniformisation adresses memoire
 options:maxmem=32000000
 options:gmem=PoulpyLoopy
 
@@ -48,7 +48,7 @@ loop(NUM_NOTES,
   units_count[i] = 0;
   is_playing[i] = 0;
   is_recording[i] = 0;
-  read_pos[i] = 0;
+  read_pos[i] = 0;  
   rec_mode[i] = 0;
   block_length[i] = 0; // Initialisation de block_length
   i += 1;
@@ -96,6 +96,10 @@ last_reset_number = 0;
 
 
 // Indices gmem pour les modes
+// <GMEM_CONTRACT_BEGIN>
+// Source unique du plan memoire gmem : lu automatiquement par les scripts Lua
+// (PoulpyLoopyCore.lua -> LoadGmemContract). Convention stricte : une declaration
+// par ligne sous la forme "GMEM_NOM = <entier>;" (valeurs entieres uniquement).
 GMEM_RECORD_MONITOR_MODE = 0;  // gmem[0] pour le mode d'enregistrement des loops MONITOR
 GMEM_PLAYBACK_MODE = 1;        // gmem[1] pour le mode LIVE/PLAYBACK
 GMEM_STATS_BASE = 2;           // gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
@@ -104,6 +108,7 @@ GMEM_MONITORING_STOP_BASE = 195;  // gmem[195] à gmem[195+64-1] pour le monitor
 GMEM_NOTE_START_POS_BASE = 259;  // gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
 GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
 GMEM_RESET_PLUGINS_BASE = 16200; // gmem[16200] à gmem[16200+64-1] pour les signaux de reset des plugins (64 instances max)
+// <GMEM_CONTRACT_END>
 
 
 

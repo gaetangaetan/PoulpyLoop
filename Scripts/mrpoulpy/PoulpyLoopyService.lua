@@ -10,14 +10,9 @@ reaper.gmem_attach("PoulpyLoopy")
 
 
 
--- Indices gmem pour les modes
-local GMEM_RECORD_MONITOR_MODE = 0  -- gmem[0] pour le mode d'enregistrement des loops MONITOR
-local GMEM_PLAYBACK_MODE = 1        -- gmem[1] pour le mode LIVE/PLAYBACK
-local GMEM_STATS_BASE = 2           -- gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
-local GMEM_NEXT_INSTANCE_ID = 194   -- gmem[194] pour le prochain ID d'instance disponible
-local GMEM_MONITORING_STOP_BASE = 195  -- gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
-local GMEM_NOTE_START_POS_BASE = 259  -- gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
-local GMEM_LOOP_LENGTH_BASE = 8451    -- gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
+-- Plan mémoire gmem : lu depuis le module Core (source unique, dérivée du JSFX). Cf. I1.
+local core = dofile(reaper.GetResourcePath() .. "/Scripts/mrpoulpy/PoulpyLoopyCore.lua")
+local GMEM = core.GMEM
 
 
 
@@ -34,19 +29,19 @@ reaper.SetExtState("PoulpyLoopyService", "running", "1", false)
 
 
 -- Initialiser les valeurs dans gmem si elles ne sont pas déjà définies
-if reaper.gmem_read(GMEM_RECORD_MONITOR_MODE) == 0 and reaper.gmem_read(GMEM_PLAYBACK_MODE) == 0 then
-    reaper.gmem_write(GMEM_RECORD_MONITOR_MODE, 0)  -- Par défaut, pas d'enregistrement des loops MONITOR
-    reaper.gmem_write(GMEM_PLAYBACK_MODE, 0)        -- Par défaut, mode LIVE
+if reaper.gmem_read(GMEM.RECORD_MONITOR_MODE) == 0 and reaper.gmem_read(GMEM.PLAYBACK_MODE) == 0 then
+    reaper.gmem_write(GMEM.RECORD_MONITOR_MODE, 0)  -- Par défaut, pas d'enregistrement des loops MONITOR
+    reaper.gmem_write(GMEM.PLAYBACK_MODE, 0)        -- Par défaut, mode LIVE
 end
 
 -- Initialiser le compteur d'ID d'instance si nécessaire
-if reaper.gmem_read(GMEM_NEXT_INSTANCE_ID) == 0 then
-    reaper.gmem_write(GMEM_NEXT_INSTANCE_ID, 0)
+if reaper.gmem_read(GMEM.NEXT_INSTANCE_ID) == 0 then
+    reaper.gmem_write(GMEM.NEXT_INSTANCE_ID, 0)
 end
 
 -- Initialiser l'espace mémoire pour les statistiques (64 instances max)
 for i = 0, 63 do
-    local stats_base = GMEM_STATS_BASE + i * 3
+    local stats_base = GMEM.STATS_BASE + i * 3
     -- Initialiser uniquement si la valeur est 0 (pas déjà définie)
     if reaper.gmem_read(stats_base) == 0 then
         reaper.gmem_write(stats_base, 0)      -- Mémoire utilisée (Mo)
@@ -57,21 +52,21 @@ end
 
 -- Initialiser l'espace mémoire pour le monitoring à l'arrêt
 for i = 0, 63 do
-    if reaper.gmem_read(GMEM_MONITORING_STOP_BASE + i) == 0 then
-        reaper.gmem_write(GMEM_MONITORING_STOP_BASE + i, 0)  -- Par défaut, monitoring à l'arrêt désactivé
+    if reaper.gmem_read(GMEM.MONITORING_STOP_BASE + i) == 0 then
+        reaper.gmem_write(GMEM.MONITORING_STOP_BASE + i, 0)  -- Par défaut, monitoring à l'arrêt désactivé
     end
 end
 
 -- Initialiser l'espace mémoire pour les positions de début des notes
 for i = 0, 63 do
     for note = 0, 127 do
-        local pos_index = GMEM_NOTE_START_POS_BASE + i * 128 + note
+        local pos_index = GMEM.NOTE_START_POS_BASE + i * 128 + note
         if reaper.gmem_read(pos_index) == 0 then
             reaper.gmem_write(pos_index, -1)  -- -1 signifie qu'aucune note n'est active
         end
         
         -- Initialiser aussi les longueurs des boucles
-        local len_index = GMEM_LOOP_LENGTH_BASE + i * 128 + note
+        local len_index = GMEM.LOOP_LENGTH_BASE + i * 128 + note
         if reaper.gmem_read(len_index) == 0 then
             reaper.gmem_write(len_index, -1)  -- -1 signifie pas de boucle
         end
@@ -96,4 +91,4 @@ local function main()
 end
 
 -- Démarrer la boucle principale
-main() 
+main()
