@@ -5,6 +5,13 @@
 
 local reaper = reaper
 
+-- Singleton (M1) : PoulpyLoopy.lua et PoulpyLoopyUI.lua chargent tous deux ce module
+-- via dofile. On evite de le reconstruire (et de relire le contrat gmem) deux fois
+-- dans le meme contexte Lua en mettant le resultat en cache.
+if package.loaded["PoulpyLoopyCore"] then
+    return package.loaded["PoulpyLoopyCore"]
+end
+
 --------------------------------------------------------------------------------
 -- Constantes globales
 --------------------------------------------------------------------------------
@@ -415,9 +422,20 @@ end
 --------------------------------------------------------------------------------
 -- Fonctions de gestion des notes MIDI
 --------------------------------------------------------------------------------
+-- I4 : true si le transport joue ou enregistre. Garde-fou pour ne pas declencher
+-- une reecriture MIDI lourde (MIDI_SetAllEvts/MIDI_Sort) en pleine performance.
+local function IsTransportActive()
+    local st = reaper.GetPlayState()
+    return (st & 1) == 1 or (st & 4) == 4  -- bit0 = lecture, bit2 = enregistrement
+end
+
 local function ProcessMIDINotes(track_filter, return_data)
-    -- Messages de debug supprimés pour éviter la pollution de la console
-    
+    -- I4 : ne rien reecrire si la lecture/enregistrement est en cours
+    if IsTransportActive() then
+        debug_console("PoulpyLoopy: transport actif - ProcessMIDINotes ignore (I4).\n")
+        return
+    end
+
     local noteCounters = {}         -- par piste (clé = track_id)
     local recordLoopPitches = {}    -- par piste: mapping { loop_name -> pitch }
     local allTakes = {}
@@ -662,6 +680,11 @@ end
 
 -- Fonction pour appliquer directement les modifications MIDI sans appeler ProcessMIDINotes
 local function ApplyMIDIChanges(take, item, midi_data)
+    -- I4 : garde-fou supplementaire si appele directement pendant la lecture
+    if IsTransportActive() then
+        debug_console("PoulpyLoopy: transport actif - ApplyMIDIChanges ignore (I4).\n")
+        return
+    end
     if not take or not item or not midi_data then return end
     
     -- Obtenir les informations nécessaires sur l'item et le take
@@ -745,7 +768,7 @@ end
 --------------------------------------------------------------------------------
 -- Export des fonctions
 --------------------------------------------------------------------------------
-return {
+local M = {
     -- Constantes
     VERSION = VERSION,
     COLORS = COLORS,
@@ -780,5 +803,10 @@ return {
     save_playback_mode = save_playback_mode,
     reset_poulpyloop_plugin = reset_poulpyloop_plugin,
     FindReferenceNote = FindReferenceNote,
-    ApplyMIDIChanges = ApplyMIDIChanges
-} 
+    ApplyMIDIChanges = ApplyMIDIChanges,
+    IsTransportActive = IsTransportActive
+}
+
+-- Mise en cache pour le singleton (M1)
+package.loaded["PoulpyLoopyCore"] = M
+return M 

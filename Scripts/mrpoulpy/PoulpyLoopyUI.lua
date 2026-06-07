@@ -28,6 +28,7 @@ local SetTakeMetadata = core.SetTakeMetadata
 local IsLoopNameValid = core.IsLoopNameValid
 local UpdateDependentLoops = core.UpdateDependentLoops
 local ProcessMIDINotes = core.ProcessMIDINotes
+local GetPreviousRecordLoopsInFolder = core.GetPreviousRecordLoopsInFolder
 local UnfoldPlayLoop = core.UnfoldPlayLoop
 local get_record_monitor_loops_mode = core.get_record_monitor_loops_mode
 local get_playback_mode = core.get_playback_mode
@@ -108,41 +109,7 @@ local midi_data = nil  -- Pour stocker les données MIDI entre les appels
 --------------------------------------------------------------------------------
 -- Fonctions locales
 --------------------------------------------------------------------------------
--- Fonction pour obtenir les loops RECORD précédentes
-local function GetPreviousRecordLoopsInFolder(take)
-    local base_track = reaper.GetMediaItemTake_Track(take)
-    local curItem = reaper.GetMediaItemTake_Item(take)
-    local curStart = reaper.GetMediaItemInfo_Value(curItem, "D_POSITION")
-    local recordLoops = {}
-    
-    -- Ne traiter que la piste actuelle
-    local nb = reaper.CountTrackMediaItems(base_track)
-    for i = 0, nb-1 do
-        local it = reaper.GetTrackMediaItem(base_track, i)
-        local st = reaper.GetMediaItemInfo_Value(it, "D_POSITION")
-        if st < curStart then
-            for tk = 0, reaper.CountTakes(it)-1 do
-                local tkTake = reaper.GetTake(it, tk)
-                if tkTake then
-                    local ty = GetTakeMetadata(tkTake, "loop_type")
-                    if ty == "RECORD" then
-                        local nm = GetTakeMetadata(tkTake, "loop_name")
-                        if nm ~= "" then
-                            recordLoops[nm] = true
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    local result = {}
-    for k, _ in pairs(recordLoops) do
-        table.insert(result, k)
-    end
-    table.sort(result)
-    return result
-end
+-- GetPreviousRecordLoopsInFolder : importe depuis le Core (M5, doublon supprime).
 
 --------------------------------------------------------------------------------
 -- Fonctions de gestion des entrées audio
@@ -1523,6 +1490,11 @@ end
 
 -- Fonction pour mettre à jour tous les blocs du projet
 local function UpdateAllBlocks()
+    -- I4 : refuser pendant la lecture/enregistrement (reecriture MIDI lourde)
+    if core.IsTransportActive() then
+        ShowToolsNotification("⚠️ Stop playback/recording before updating all blocks.", "error")
+        return
+    end
     -- Sauvegarder la sélection actuelle
     local old_sel_items = {}
     for s = 0, reaper.CountSelectedMediaItems(0) - 1 do
@@ -1656,8 +1628,12 @@ local function DrawTools()
     reaper.ImGui_Separator(ctx)
     
     if reaper.ImGui_Button(ctx, "Prepare for PoulpyLoopy") then
-        core.ProcessMIDINotes()
-        ShowToolsNotification("✅ PoulpyLoopy preparation completed successfully!", "success")
+        if core.IsTransportActive() then
+            ShowToolsNotification("⚠️ Stop playback/recording before preparing (heavy MIDI rewrite).", "error")
+        else
+            core.ProcessMIDINotes()
+            ShowToolsNotification("✅ PoulpyLoopy preparation completed successfully!", "success")
+        end
     end
 
     reaper.ImGui_Separator(ctx)
@@ -1698,60 +1674,9 @@ end
 
 
 --------------------------------------------------------------------------------
--- Fonction pour calculer la hauteur nécessaire
---------------------------------------------------------------------------------
-local function calculateRequiredHeight()
-    local base_height = 18  -- Hauteur de base pour les éléments fixes
-    local item_height = 22   -- Hauteur approximative par élément
-    local content_height = base_height
-    
-    -- Vérifier si la take existe toujours et est valide
-    if current_take and reaper.ValidatePtr2(0, current_take, "MediaItem_Take*") and reaper.TakeIsMIDI(current_take) then
-        local loop_type = loop_types[selected_loop_type_index + 1]
-        
-        -- Ajouter la hauteur pour les éléments communs
-        content_height = content_height + (3 * item_height)  -- Note MIDI, séparateur, nombre d'éléments
-        
-        -- Ajouter la hauteur selon le type de loop
-        if loop_type == "RECORD" then
-            content_height = content_height + (6 * item_height)  -- Type, Nom, Mono/Stereo, Pan, Vol, Monitoring
-        elseif loop_type == "PLAY" or loop_type == "OVERDUB" then
-            content_height = content_height + (7 * item_height)  -- Type, Réf, Mono/Stereo, Pan, Vol, Monitoring, Pitch
-        elseif loop_type == "MONITOR" then
-            content_height = content_height + (5 * item_height)  -- Type, Mono/Stereo, Pan, Vol, Monitoring
-        end
-        
-
-        
-        -- Ajouter la hauteur pour le bouton Appliquer et le message de progression
-        content_height = content_height + (2 * item_height)
-    else
-        -- Si aucun take n'est sélectionné
-        content_height = content_height + item_height
-    end
-    
-    -- Ajouter une marge et s'assurer d'une hauteur minimale
-    return math.max(270, content_height)
-    
-end
-
--- Fonction pour calculer la hauteur nécessaire des onglets Options et Tools
-local function calculateTabsHeight()
-    local base_height = 50  -- Hauteur de base pour les éléments fixes
-    local item_height = 22   -- Hauteur approximative par élément
-    local content_height = base_height
-    
-    -- Calculer la hauteur pour l'onglet Options
-    content_height = content_height + (6 * item_height)  -- Radio buttons et séparateurs
-    
-    -- Calculer la hauteur pour l'onglet Tools
-    content_height = content_height + (12 * item_height)  -- Boutons, séparateurs et contrôles
-    
-    -- Ajouter une marge et s'assurer d'une hauteur minimale
-    return math.max(400, content_height)
-end
-
 -- Fonctions pour calculer la hauteur nécessaire pour chaque onglet
+-- (calculateRequiredHeight et calculateTabsHeight, doublons inutilises, retires - M5)
+--------------------------------------------------------------------------------
 local function calculateLoopEditorHeight()
     local base_height = 55  -- Hauteur de base pour les éléments fixes
     local item_height = 22   -- Hauteur approximative par élément
