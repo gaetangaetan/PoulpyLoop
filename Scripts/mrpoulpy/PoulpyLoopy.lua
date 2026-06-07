@@ -44,10 +44,52 @@ local core = dofile(script_path .. "PoulpyLoopyCore.lua")
 local ui = dofile(script_path .. "PoulpyLoopyUI.lua")
 
 --------------------------------------------------------------------------------
+-- Affichage des versions / dates de modification des fichiers (aide aux tests)
+--------------------------------------------------------------------------------
+-- Lit la date de derniere modification d'un fichier sur le disque.
+-- Necessite l'extension js_ReaScriptAPI (JS_File_Stat) ; repli propre sinon.
+local function getFileModifiedDate(path)
+  if reaper.APIExists("JS_File_Stat") then
+    -- Retour : retval (0 = OK), size, accessedTime, modifiedTime, ...
+    local retval, _, _, modified = reaper.JS_File_Stat(path)
+    if retval == 0 and modified and modified ~= "" then
+      return modified  -- format "AAAA.MM.JJ HH:MM:SS"
+    end
+  end
+  if reaper.file_exists(path) then
+    return "(date indisponible - installez js_ReaScriptAPI)"
+  end
+  return "(fichier introuvable)"
+end
+
+local function PrintVersionInfo()
+  local files = {
+    { label = "PoulpyLoopy.lua",          path = script_path .. "PoulpyLoopy.lua" },
+    { label = "PoulpyLoopyCore.lua",      path = script_path .. "PoulpyLoopyCore.lua" },
+    { label = "PoulpyLoopyUI.lua",        path = script_path .. "PoulpyLoopyUI.lua" },
+    { label = "PoulpyLoopyService.lua",   path = script_path .. "PoulpyLoopyService.lua" },
+    { label = "Effects/PoulpyLoop (JSFX)", path = reaper.GetResourcePath() .. "/Effects/PoulpyLoop" },
+  }
+  local lines = {}
+  lines[#lines + 1] = "============================================================\n"
+  lines[#lines + 1] = "PoulpyLoopy - versions des fichiers (version Core : " .. tostring(core.VERSION) .. ")\n"
+  lines[#lines + 1] = "Derniere modification de chaque fichier :\n"
+  lines[#lines + 1] = "------------------------------------------------------------\n"
+  for _, f in ipairs(files) do
+    lines[#lines + 1] = string.format("  %-26s : %s\n", f.label, getFileModifiedDate(f.path))
+  end
+  lines[#lines + 1] = "============================================================\n"
+  reaper.ShowConsoleMsg(table.concat(lines))
+end
+
+--------------------------------------------------------------------------------
 -- Initialisation
 --------------------------------------------------------------------------------
 -- Se connecter à gmem
 reaper.gmem_attach("PoulpyLoopy")
+
+-- Afficher les versions/dates des fichiers pour savoir exactement ce qui est testé
+PrintVersionInfo()
 
 -- Vérification et démarrage du service
 local service_running = reaper.GetExtState("PoulpyLoopyService", "running")
