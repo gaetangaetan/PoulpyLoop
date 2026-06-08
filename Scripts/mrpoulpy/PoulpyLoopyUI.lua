@@ -324,6 +324,8 @@ local function UpdateTakeData(take)
 --------------------------------------------------------------------------------
 local function init()
     buildRecInputOptions()
+    -- Attribuer les identifiants d'instance stables aux plugins (C3/C4)
+    core.AssignInstanceIds()
     -- Restaurer la largeur de la fenêtre
     local saved_width = reaper.GetExtState("PoulpyLoopy", "window_width")
     if saved_width ~= "" then
@@ -1167,6 +1169,10 @@ local function DrawLoopEditor()
 end
 
 local function DrawOptions()
+    -- S'assurer que les id d'instance restent alignes avec la numerotation utilisee
+    -- ci-dessous pour le monitoring a l'arret (C3/C4). N'ecrit que si un id a change.
+    core.AssignInstanceIds()
+
     -- Partie 1: Options d'enregistrement
     reaper.ImGui_Text(ctx, "Recording options :")
     reaper.ImGui_Separator(ctx)

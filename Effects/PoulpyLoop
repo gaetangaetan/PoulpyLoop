@@ -10,6 +10,7 @@ out_pin:Right Out
 slider1:40<0,256,1>Fade (échantillons)
 slider2:0.0<-24,24,1>Pitch Control
 slider3:0<0,1,1{OFF,ON}>Monitoring à l'arrêt
+slider4:0<0,63,1>Instance ID (auto - ne pas toucher)
 
 
 @init
@@ -100,24 +101,11 @@ GMEM_RESET_PLUGINS_BASE = 16200; // gmem[16200] à gmem[16200+64-1] pour les sig
 
 
 
-// Chercher un ID unique pour cette instance
-function get_unique_instance_id()
-(
-  // Lire le prochain ID disponible
-  next_id = gmem[GMEM_NEXT_INSTANCE_ID];
-  
-  // Si c'est la première fois, initialiser à 0
-  (next_id == 0) ? next_id = 0;
-  
-  // Incrémenter pour la prochaine instance
-  gmem[GMEM_NEXT_INSTANCE_ID] = (next_id + 1) % 64;
-  
-  // Retourner l'ID attribué
-  next_id;
-);
-
-// Attribuer un identifiant unique à cette instance
-instance_id = get_unique_instance_id();  // Un identifiant entre 0 et 63
+// Identifiant d'instance (C3/C4) : fourni par les scripts Lua via slider4
+// (= index de la piste parmi les pistes PoulpyLoop). Source unique et stable,
+// partagee avec l'UI, qui remplace l'ancien compteur tournant gmem[NEXT_INSTANCE_ID]
+// (sujet aux collisions au-dela de 64 (re)initialisations et au desalignement UI).
+instance_id = max(0, floor(slider4));  // 0..63, attribue par le Lua
 
 
 
@@ -204,6 +192,8 @@ function expandRecording(note)
 
 @slider
 fade_samples = slider1;
+// Suivre l'id attribue par le Lua (slider4) avant tout acces gmem indexe (C3/C4)
+instance_id = max(0, floor(slider4));
 // Mettre à jour gmem avec l'état du monitoring à l'arrêt
 gmem[GMEM_MONITORING_STOP_BASE + instance_id] = slider3;
 

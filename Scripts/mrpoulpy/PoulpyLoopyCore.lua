@@ -649,6 +649,45 @@ local function reset_poulpyloop_plugin(track)
     return false
 end
 
+-- C3/C4 : attribue a chaque piste contenant PoulpyLoop un identifiant d'instance
+-- stable et unique (= son rang parmi les pistes PoulpyLoop, dans l'ordre des pistes),
+-- pousse au plugin via slider4 (param index 3). C'est exactement la numerotation
+-- utilisee par l'UI pour le monitoring a l'arret -> plugin et UI restent toujours
+-- alignes (C3), et l'id ne depend plus du compteur tournant gmem (C4).
+-- N'ecrit le parametre que s'il a change (evite tout churn / projet "dirty" inutile).
+local POULPYLOOP_ID_PARAM = 3  -- slider4
+local function AssignInstanceIds()
+    local idx = 0
+    local overflow = false
+    local num_tracks = reaper.CountTracks(0)
+    for t = 0, num_tracks - 1 do
+        local track = reaper.GetTrack(0, t)
+        if track then
+            local fx_count = reaper.TrackFX_GetCount(track)
+            local track_has = false
+            for j = 0, fx_count - 1 do
+                local _, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+                if fx_name:find("PoulpyLoop") then
+                    track_has = true
+                    if idx <= 63 then
+                        local cur = reaper.TrackFX_GetParam(track, j, POULPYLOOP_ID_PARAM)
+                        if math.floor((cur or 0) + 0.5) ~= idx then
+                            reaper.TrackFX_SetParam(track, j, POULPYLOOP_ID_PARAM, idx)
+                        end
+                    else
+                        overflow = true
+                    end
+                end
+            end
+            if track_has then idx = idx + 1 end
+        end
+    end
+    if overflow then
+        debug_console("PoulpyLoopy: plus de 64 pistes PoulpyLoop - les instances au-dela de 64 partageraient un identifiant (C4).\n")
+    end
+    return idx
+end
+
 -- Fonction auxiliaire pour trouver la hauteur de note référencée pour un bloc PLAY ou OVERDUB
 local function FindReferenceNote(reference_loop, recordPitches)
     if not recordPitches then return 0 end
@@ -804,7 +843,8 @@ local M = {
     reset_poulpyloop_plugin = reset_poulpyloop_plugin,
     FindReferenceNote = FindReferenceNote,
     ApplyMIDIChanges = ApplyMIDIChanges,
-    IsTransportActive = IsTransportActive
+    IsTransportActive = IsTransportActive,
+    AssignInstanceIds = AssignInstanceIds
 }
 
 -- Mise en cache pour le singleton (M1)
