@@ -19,6 +19,13 @@ ext_noinit = 1;
 NUM_NOTES = 128;
 UNIT_SIZE = 4096 * 64;
 max_units = 32000000 / UNIT_SIZE;
+// --- Limite mémoire (I5) ---
+// La mémoire audio est un allocateur "bump" (next_free_unit n'est remis à 0 qu'au
+// rechargement/transport). maxmem=32 000 000 samples partagés entre toutes les notes
+// de CETTE instance, soit ~11 min d'audio à 48 kHz (32e6 / 48000 / 60).
+// En usage normal (1-2 boucles de quelques mesures par piste) c'est largement
+// suffisant ; au-delà l'allocation sature (voir startRecording). Si un jour ce
+// plafond devenait gênant, augmenter maxmem (ligne options) et ce diviseur.
 
 
 
@@ -91,7 +98,7 @@ last_reset_number = 0;
 GMEM_RECORD_MONITOR_MODE = 0;  // gmem[0] pour le mode d'enregistrement des loops MONITOR
 GMEM_PLAYBACK_MODE = 1;        // gmem[1] pour le mode LIVE/PLAYBACK
 GMEM_STATS_BASE = 2;           // gmem[2] à gmem[2+64*3-1] pour les statistiques (64 instances max)
-GMEM_NEXT_INSTANCE_ID = 194;   // gmem[194] pour le prochain ID d'instance disponible
+// gmem[194] : libre (ancien GMEM_NEXT_INSTANCE_ID, supprimé avec C4 - ne pas réutiliser sans renumérotation)
 GMEM_MONITORING_STOP_BASE = 195;  // gmem[195] à gmem[195+64-1] pour le monitoring à l'arrêt (64 instances max)
 GMEM_NOTE_START_POS_BASE = 259;  // gmem[259] à gmem[259+64*128-1] pour les positions de début des notes (64 instances * 128 notes)
 GMEM_LOOP_LENGTH_BASE = 8451;    // gmem[8451] à gmem[8451+64*128-1] pour les longueurs des boucles en secondes (64 instances * 128 notes)
@@ -103,7 +110,7 @@ GMEM_RESET_PLUGINS_BASE = 16200; // gmem[16200] à gmem[16200+64-1] pour les sig
 
 // Identifiant d'instance (C3/C4) : fourni par les scripts Lua via slider4
 // (= index de la piste parmi les pistes PoulpyLoop). Source unique et stable,
-// partagee avec l'UI, qui remplace l'ancien compteur tournant gmem[NEXT_INSTANCE_ID]
+// partagee avec l'UI, qui remplace l'ancien compteur tournant en gmem
 // (sujet aux collisions au-dela de 64 (re)initialisations et au desalignement UI).
 instance_id = max(0, floor(slider4));  // 0..63, attribue par le Lua
 

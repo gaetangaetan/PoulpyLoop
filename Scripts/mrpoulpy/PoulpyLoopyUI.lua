@@ -756,27 +756,36 @@ local function DrawLoopEditor()
         reaper.ImGui_Separator(ctx)
 
         -- Afficher le nombre d'éléments sélectionnés
+        -- M4 : on lit directement la sélection (O(items sélectionnés)) au lieu de
+        -- parcourir toutes les pistes et tous les items du projet à chaque frame.
         local selected_items = {}
-        local num_tracks = reaper.CountTracks(0)
+        local sel_count = reaper.CountSelectedMediaItems(0)
+        for i = 0, sel_count - 1 do
+            local item = reaper.GetSelectedMediaItem(0, i)
+            local take = item and reaper.GetActiveTake(item)
+            if take and reaper.TakeIsMIDI(take) then
+                local track = reaper.GetMediaItemTake_Track(take)
+                table.insert(selected_items, {item = item, take = take, track = track})
+            end
+        end
+
+        -- Conserver l'ordre d'origine (ordre des pistes puis position) pour ne pas
+        -- changer quel item est selected_items[1] (référence du traitement par lot).
+        table.sort(selected_items, function(a, b)
+            local ta = reaper.GetMediaTrackInfo_Value(a.track, "IP_TRACKNUMBER")
+            local tb = reaper.GetMediaTrackInfo_Value(b.track, "IP_TRACKNUMBER")
+            if ta ~= tb then return ta < tb end
+            return reaper.GetMediaItemInfo_Value(a.item, "D_POSITION")
+                 < reaper.GetMediaItemInfo_Value(b.item, "D_POSITION")
+        end)
+
         local selected_track = nil
         local all_same_track = true
-        
-        for t = 0, num_tracks - 1 do
-            local track = reaper.GetTrack(0, t)
-            local item_count = reaper.CountTrackMediaItems(track)
-            for i = 0, item_count - 1 do
-                local item = reaper.GetTrackMediaItem(track, i)
-                if reaper.IsMediaItemSelected(item) then
-                    local take = reaper.GetActiveTake(item)
-                    if take and reaper.TakeIsMIDI(take) then
-                        table.insert(selected_items, {item = item, take = take, track = track})
-                        if not selected_track then
-                            selected_track = track
-                        elseif selected_track ~= track then
-                            all_same_track = false
-                        end
-                    end
-                end
+        for _, si in ipairs(selected_items) do
+            if not selected_track then
+                selected_track = si.track
+            elseif selected_track ~= si.track then
+                all_same_track = false
             end
         end
         
@@ -1168,10 +1177,57 @@ local function DrawLoopEditor()
     end
 end
 
+-- M4 : cache de la liste des pistes (nom + présence PoulpyLoop + index FX).
+-- Reconstruit uniquement quand l'état du projet change (ajout/suppression/renommage
+-- de piste ou de FX), au lieu de re-scanner toutes les pistes et FX à chaque frame.
+local _track_rows_cache = nil
+local _track_rows_change = -1
+local function GetTrackRows()
+    local cc = reaper.GetProjectStateChangeCount(0)
+    if _track_rows_cache and cc == _track_rows_change then
+        return _track_rows_cache, false
+    end
+
+    local rows = {}
+    local pidx = 0  -- index de la piste parmi les pistes PoulpyLoop (= instance_id)
+    local num_tracks = reaper.CountTracks(0)
+    for i = 0, num_tracks - 1 do
+        local track = reaper.GetTrack(0, i)
+        if track then
+            local _, track_name = reaper.GetTrackName(track)
+            local fx = {}
+            local fx_count = reaper.TrackFX_GetCount(track)
+            for j = 0, fx_count - 1 do
+                local _, fx_name = reaper.TrackFX_GetFXName(track, j, "")
+                if fx_name:find("PoulpyLoop") then
+                    fx[#fx + 1] = j
+                end
+            end
+            local has = #fx > 0
+            rows[#rows + 1] = {
+                track = track,
+                name = track_name,
+                has = has,
+                fx = fx,
+                pidx = has and pidx or nil
+            }
+            if has then pidx = pidx + 1 end
+        end
+    end
+
+    _track_rows_cache = rows
+    _track_rows_change = cc
+    return rows, true
+end
+
 local function DrawOptions()
     -- S'assurer que les id d'instance restent alignes avec la numerotation utilisee
-    -- ci-dessous pour le monitoring a l'arret (C3/C4). N'ecrit que si un id a change.
-    core.AssignInstanceIds()
+    -- ci-dessous pour le monitoring a l'arret (C3/C4). N'ecrit que si l'etat du
+    -- projet a change (M4) : inutile de re-scanner/re-attribuer a chaque frame.
+    local _, rows_rebuilt = GetTrackRows()
+    if rows_rebuilt then
+        core.AssignInstanceIds()
+    end
 
     -- Partie 1: Options d'enregistrement
     reaper.ImGui_Text(ctx, "Recording options :")
@@ -1249,77 +1305,57 @@ local function DrawOptions()
     reaper.ImGui_TableSetupColumn(ctx, "Monitoring when stopped", reaper.ImGui_TableColumnFlags_WidthFixed(), 150)
     reaper.ImGui_TableHeadersRow(ctx)
 
-    -- Parcourir toutes les pistes
-    local num_tracks = reaper.CountTracks(0)
-    local poulpy_track_index = 0  -- Nouveau compteur pour les pistes avec PoulpyLoop
-    
-    for i = 0, num_tracks - 1 do
-        local track = reaper.GetTrack(0, i)
-        if track then  -- Vérifier que la piste existe
-            local _, track_name = reaper.GetTrackName(track)
-            
-            -- Vérifier si la piste contient un plugin PoulpyLoop
-            local has_poulpyloop = false
-            local fx_count = reaper.TrackFX_GetCount(track)
-            for j = 0, fx_count - 1 do
-                local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
-                if fx_name:find("PoulpyLoop") then
-                    has_poulpyloop = true
-                    break
-                end
-            end
+    -- Parcourir toutes les pistes (via le cache M4)
+    local rows = GetTrackRows()
+    for row_index, row in ipairs(rows) do
+        local track = row.track
+        local has_poulpyloop = row.has
 
-            -- Afficher la piste même si elle n'a pas de PoulpyLoop
-            reaper.ImGui_TableNextRow(ctx)
-            
-            -- Nom de la piste
-            reaper.ImGui_TableNextColumn(ctx)
-            reaper.ImGui_Text(ctx, track_name)
+        -- Afficher la piste même si elle n'a pas de PoulpyLoop
+        reaper.ImGui_TableNextRow(ctx)
 
-            -- Case à cocher pour le monitoring à l'arrêt
-            reaper.ImGui_TableNextColumn(ctx)
-            local monitoring_stop = false
-            
-            -- Ne lire la valeur de gmem que pour les pistes avec PoulpyLoop
-            if has_poulpyloop then
-                monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + poulpy_track_index) == 1
-            end
-            
-            local checkbox_id = "##monitoring_stop_" .. i
-            
-            -- Si la piste n'a pas de PoulpyLoop, désactiver la case à cocher
-            if not has_poulpyloop then
-                reaper.ImGui_BeginDisabled(ctx)
-            end
-            
-            if reaper.ImGui_Checkbox(ctx, checkbox_id, monitoring_stop) then
-                -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
-                if has_poulpyloop then  -- Ne mettre à jour que si la piste a PoulpyLoop
-                    local new_value = monitoring_stop and 0 or 1
-                    -- Mettre à jour la valeur dans gmem
-                    reaper.gmem_write(GMEM.MONITORING_STOP_BASE + poulpy_track_index, new_value)
-                    
-                    -- Mettre à jour le paramètre du plugin
-                    local fx_count = reaper.TrackFX_GetCount(track)
-                    for j = 0, fx_count - 1 do
-                        local retval, fx_name = reaper.TrackFX_GetFXName(track, j, "")
-                        if fx_name:find("PoulpyLoop") then
-                            reaper.TrackFX_SetParam(track, j, 2, new_value) -- slider3 est le paramètre d'index 2
-                        end
-                    end
+        -- Nom de la piste
+        reaper.ImGui_TableNextColumn(ctx)
+        reaper.ImGui_Text(ctx, row.name)
+
+        -- Case à cocher pour le monitoring à l'arrêt
+        reaper.ImGui_TableNextColumn(ctx)
+        local monitoring_stop = false
+
+        -- Ne lire la valeur de gmem que pour les pistes avec PoulpyLoop
+        if has_poulpyloop then
+            monitoring_stop = reaper.gmem_read(GMEM.MONITORING_STOP_BASE + row.pidx) == 1
+        end
+
+        local checkbox_id = "##monitoring_stop_" .. row_index
+
+        -- Si la piste n'a pas de PoulpyLoop, désactiver la case à cocher
+        if not has_poulpyloop then
+            reaper.ImGui_BeginDisabled(ctx)
+        end
+
+        if reaper.ImGui_Checkbox(ctx, checkbox_id, monitoring_stop) then
+            -- Mettre à jour slider3 pour toutes les instances de PoulpyLoop sur cette piste
+            if has_poulpyloop then  -- Ne mettre à jour que si la piste a PoulpyLoop
+                local new_value = monitoring_stop and 0 or 1
+                -- Mettre à jour la valeur dans gmem
+                reaper.gmem_write(GMEM.MONITORING_STOP_BASE + row.pidx, new_value)
+
+                -- Mettre à jour le paramètre du plugin (slider3 = index 2)
+                for _, j in ipairs(row.fx) do
+                    reaper.TrackFX_SetParam(track, j, 2, new_value)
                 end
             end
-            
-            if not has_poulpyloop then
-                reaper.ImGui_EndDisabled(ctx)
-                if reaper.ImGui_IsItemHovered(ctx) then
-                    reaper.ImGui_SetTooltip(ctx, "This track does not contain a PoulpyLoop plugin")
-                end
-            else
-                if reaper.ImGui_IsItemHovered(ctx) then
-                    reaper.ImGui_SetTooltip(ctx, "When this option is enabled, the input signal is routed to the outputs when playback is stopped.")
-                end
-                poulpy_track_index = poulpy_track_index + 1  -- Incrémenter le compteur uniquement pour les pistes avec PoulpyLoop
+        end
+
+        if not has_poulpyloop then
+            reaper.ImGui_EndDisabled(ctx)
+            if reaper.ImGui_IsItemHovered(ctx) then
+                reaper.ImGui_SetTooltip(ctx, "This track does not contain a PoulpyLoop plugin")
+            end
+        else
+            if reaper.ImGui_IsItemHovered(ctx) then
+                reaper.ImGui_SetTooltip(ctx, "When this option is enabled, the input signal is routed to the outputs when playback is stopped.")
             end
         end
     end

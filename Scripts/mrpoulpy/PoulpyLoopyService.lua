@@ -34,11 +34,6 @@ if reaper.gmem_read(GMEM.RECORD_MONITOR_MODE) == 0 and reaper.gmem_read(GMEM.PLA
     reaper.gmem_write(GMEM.PLAYBACK_MODE, 0)        -- Par défaut, mode LIVE
 end
 
--- Initialiser le compteur d'ID d'instance si nécessaire
-if reaper.gmem_read(GMEM.NEXT_INSTANCE_ID) == 0 then
-    reaper.gmem_write(GMEM.NEXT_INSTANCE_ID, 0)
-end
-
 -- Initialiser l'espace mémoire pour les statistiques (64 instances max)
 for i = 0, 63 do
     local stats_base = GMEM.STATS_BASE + i * 3
